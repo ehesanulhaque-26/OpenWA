@@ -35,7 +35,7 @@ plugins instead of in core (#265).
 
 ### Changed
 
-- ⚠️ **Node.js ≥ 20.19 now required.** The Baileys engine dependency (`@whiskeysockets/baileys`) is ESM-only and is loaded at startup, so OpenWA now requires Node ≥ 20.19 (for `require()` of ESM). Operators on older Node must upgrade. (#299)
+- **Baileys engine loads lazily** — `@whiskeysockets/baileys` is imported via a dynamic `import()` only when the Baileys engine is actually used (`ENGINE_TYPE=baileys`). Operators using the default whatsapp-web.js engine are unaffected and there is no global Node version floor. (#299)
 - Engine config is now **opaque per-engine**: `EngineFactory` passes only engine-neutral fields
   (`sessionId`/`proxyUrl`/`proxyType`) to an engine plugin and supplies engine-specific config (Puppeteer
   for whatsapp-web.js) as a blob via the plugin context, so a non-browser engine can be added without the

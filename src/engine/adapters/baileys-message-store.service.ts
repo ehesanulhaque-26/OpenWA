@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { BufferJSON } from '@whiskeysockets/baileys';
 import type { WAMessage } from '@whiskeysockets/baileys';
 import { BaileysStoredMessage } from './baileys-stored-message.entity';
 import { BaileysMessageStore } from '../types/baileys.types';
@@ -13,6 +12,13 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 
 @Injectable()
 export class BaileysMessageStoreService implements BaileysMessageStore {
+  /** Lazily loaded @whiskeysockets/baileys module (ESM-only; loaded on first use, not at boot). */
+  private baileysLib: any;
+
+  private async loadLib(): Promise<any> {
+    return (this.baileysLib ??= await import('@whiskeysockets/baileys'));
+  }
+
   constructor(
     @InjectRepository(BaileysStoredMessage, 'data')
     private readonly repo: Repository<BaileysStoredMessage>,
@@ -23,6 +29,9 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     if (!waMessageId) {
       return;
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const { BufferJSON } = await this.loadLib();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     const serializedMessage = JSON.stringify(msg, BufferJSON.replacer);
     // Idempotent: the same message arrives from the send return AND the messages.upsert echo.
     await this.repo.upsert({ sessionId, waMessageId, serializedMessage }, ['sessionId', 'waMessageId']);
@@ -34,6 +43,9 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     if (!row) {
       return null;
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const { BufferJSON } = await this.loadLib();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     return JSON.parse(row.serializedMessage, BufferJSON.reviver) as WAMessage;
   }
 
