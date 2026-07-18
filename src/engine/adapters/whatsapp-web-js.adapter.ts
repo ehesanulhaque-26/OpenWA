@@ -1217,8 +1217,28 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
   async getNumberId(number: string): Promise<string | null> {
     this.ensureReady();
-    const numberId = await this.client!.getNumberId(number);
-    return numberId?._serialized ?? null;
+    try {
+      // Add timeout protection: CDP calls to WhatsApp Web can hang when the page is unresponsive
+      // (e.g., memory pressure, navigation, or Chromium crash in constrained environments).
+      // On timeout/error, return null so resolveSendId falls back to the original ID.
+      const timeoutMs = 10_000;
+      const numberId = await Promise.race([
+        this.client!.getNumberId(number),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('getNumberId timeout')), timeoutMs)),
+      ]);
+      return numberId?._serialized ?? null;
+    } catch (error) {
+      // Log CDP/browser errors gracefully - don't let them surface as 500.
+      // "Execution context was destroyed" means the WhatsApp Web page crashed/reloaded.
+      // "Target closed" means Chromium itself closed.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (isExecutionContextDestroyedError(msg) || /Target closed/i.test(msg)) {
+        this.logger.warn(`getNumberId failed: ${msg}. WhatsApp Web may have crashed.`, { number });
+        return null;
+      }
+      this.logger.warn(`getNumberId failed: ${msg}`, { number });
+      return null;
+    }
   }
 
   async checkNumberExists(number: string): Promise<boolean> {

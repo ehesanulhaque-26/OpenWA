@@ -268,6 +268,83 @@ describe('WhatsAppWebJsAdapter readiness guard (#100)', () => {
   });
 });
 
+describe('WhatsAppWebJsAdapter.getNumberId timeout and error handling', () => {
+  const readyAdapter = (client: unknown): WhatsAppWebJsAdapter => {
+    const adapter = new WhatsAppWebJsAdapter({ sessionId: 's', sessionDataPath: './data/sessions', puppeteer: {} });
+    (adapter as unknown as { status: EngineStatus }).status = EngineStatus.READY;
+    (adapter as unknown as { client: unknown }).client = client;
+    return adapter;
+  };
+
+  it('returns null when CDP call times out (Railway/constrained environment)', async () => {
+    jest.useFakeTimers();
+    try {
+      // Simulate a CDP timeout - getNumberId hangs indefinitely
+      const client = { getNumberId: jest.fn(() => new Promise(() => {})) };
+      const adapter = readyAdapter(client);
+      const resultPromise = adapter.getNumberId('628123456789@c.us');
+      // Advance past the 10s timeout
+      await jest.advanceTimersByTimeAsync(11_000);
+      const result = await resultPromise;
+      expect(result).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns null when CDP call fails with "Execution context was destroyed"', async () => {
+    const client = {
+      getNumberId: jest.fn().mockRejectedValue(new Error('ProtocolError: Execution context was destroyed')),
+    };
+    const adapter = readyAdapter(client);
+    const result = await adapter.getNumberId('628123456789@c.us');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when CDP call fails with "Target closed"', async () => {
+    const client = {
+      getNumberId: jest.fn().mockRejectedValue(new Error('ProtocolError: Target closed')),
+    };
+    const adapter = readyAdapter(client);
+    const result = await adapter.getNumberId('628123456789@c.us');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when CDP call fails with "Runtime.callFunctionOn timed out"', async () => {
+    const client = {
+      getNumberId: jest.fn().mockRejectedValue(new Error('ProtocolError: Runtime.callFunctionOn timed out')),
+    };
+    const adapter = readyAdapter(client);
+    const result = await adapter.getNumberId('628123456789@c.us');
+    expect(result).toBeNull();
+  });
+
+  it('returns the serialized id when getNumberId succeeds', async () => {
+    const client = {
+      getNumberId: jest.fn().mockResolvedValue({ _serialized: '628123456789@c.us' }),
+    };
+    const adapter = readyAdapter(client);
+    const result = await adapter.getNumberId('628123456789');
+    expect(result).toBe('628123456789@c.us');
+  });
+
+  it('returns null when getNumberId returns null (number not on WhatsApp)', async () => {
+    const client = { getNumberId: jest.fn().mockResolvedValue(null) };
+    const adapter = readyAdapter(client);
+    const result = await adapter.getNumberId('123456789');
+    expect(result).toBeNull();
+  });
+
+  it('checkNumberExists returns false when getNumberId fails', async () => {
+    const client = {
+      getNumberId: jest.fn().mockRejectedValue(new Error('Execution context was destroyed')),
+    };
+    const adapter = readyAdapter(client);
+    const result = await adapter.checkNumberExists('628123456789');
+    expect(result).toBe(false);
+  });
+});
+
 describe('WhatsAppWebJsAdapter.getChatHistory enrichment (parity with the live path)', () => {
   const readyAdapter = (client: unknown): WhatsAppWebJsAdapter => {
     const adapter = new WhatsAppWebJsAdapter({ sessionId: 's', sessionDataPath: './data/sessions', puppeteer: {} });
