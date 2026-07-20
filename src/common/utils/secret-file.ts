@@ -1,4 +1,6 @@
-import { writeFileSync, chmodSync } from 'fs';
+import * as fs from 'fs';
+import { writeFileSync, chmodSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 /**
  * Write a secret file (e.g. the generated `.env`, the raw admin key) with owner-only permissions.
@@ -10,6 +12,17 @@ import { writeFileSync, chmodSync } from 'fs';
  * absent file on the pre-write call, shouldn't break the write — create-mode covers new files).
  */
 export function writeSecretFile(filePath: string, content: string): void {
+  // Ensure parent directory exists (Railway and some Docker setups may need this)
+  const dir = dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o755 });
+    } catch (mkdirError) {
+      // Best-effort - may fail on read-only filesystems
+      console.warn(`[OpenWA] Could not create directory ${dir}: ${(mkdirError as Error).message}`);
+    }
+  }
+
   try {
     chmodSync(filePath, 0o600);
   } catch (error) {

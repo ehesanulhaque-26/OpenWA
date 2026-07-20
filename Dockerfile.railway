@@ -1,0 +1,105 @@
+# OpenWA - Dockerfile for Railway deployment
+# Based on the main Dockerfile but adapted for Railway's environment
+
+# ===== Stage 1: Builder =====
+FROM --platform=$BUILDPLATFORM docker.io/node:22-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies INCLUDING devDependencies
+RUN npm ci --include=dev
+
+# Copy source code
+COPY . .
+
+# Build the API and dashboard
+RUN npm run build && npm run dashboard:ci -- --include=dev && npm run dashboard:build
+
+# ===== Stage 2: Production =====
+FROM docker.io/node:22-slim AS production
+
+# Install runtime dependencies
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y \
+    $([ "$TARGETARCH" = arm64 ] && echo chromium) \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    xdg-utils \
+    curl \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Environment variables
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV HOME=/app/data
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Backport patcher
+COPY scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch ./scripts/
+
+# Install production dependencies
+RUN npm ci --omit=dev && node scripts/patch-wwebjs-201832.js && npm cache clean --force
+
+# Download Chrome
+RUN if [ "$TARGETARCH" = arm64 ]; then \
+        ln -s /usr/bin/chromium /usr/local/bin/puppeteer-chrome; \
+    else \
+        mkdir -p /opt/puppeteer && \
+        PUPPETEER_CACHE_DIR=/opt/puppeteer ./node_modules/.bin/puppeteer browsers install 'chrome@146.0.7680.31'; \
+        chrome_path=$(find /opt/puppeteer/chrome/linux*/chrome-linux64/chrome | head -n 1) && \
+        test -n "$chrome_path" && \
+        ln -s "$chrome_path" /usr/local/bin/puppeteer-chrome; \
+    fi
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/puppeteer-chrome
+
+# Copy built application
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/dashboard/dist ./dashboard/dist
+
+# Create data directories with proper ownership BEFORE switching to non-root user
+# This ensures the directories exist even if Railway doesn't mount volumes
+RUN mkdir -p /app/data/sessions /app/data/media /app/data/plugins && \
+    chmod -R 755 /app && \
+    chmod -R 777 /app/data
+
+# Create XDG directories for Chromium
+RUN mkdir -p /tmp/.config /tmp/.cache && \
+    chmod -R 777 /tmp/.config /tmp/.cache
+
+# Switch to non-root user
+USER node
+
+# Expose port (Railway will set PORT env var)
+EXPOSE 2785
+
+# Start the application
+# Railway sets PORT env var
+CMD ["node", "dist/main"]

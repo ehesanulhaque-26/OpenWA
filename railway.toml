@@ -1,0 +1,13 @@
+[railway]
+# OpenWA - Railway Deployment
+name = "openwa"
+
+[build]
+# Use the Railway-specific Dockerfile
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.railway"
+
+[deploy]
+# Railway sets PORT env var - the app listens on PORT or defaults to 2785
+startCommand = "node dist/main"
+healthCheckPath = "/api/health/ready"
