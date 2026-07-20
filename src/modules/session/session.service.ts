@@ -37,9 +37,15 @@ import {
   IncomingMessage,
   ReactionEvent,
   EditedMessage,
+  GroupEvent,
+  IncomingCallEvent,
 } from '../../engine/interfaces/whatsapp-engine.interface';
 import { createLogger } from '../../common/services/logger.service';
 import { ShutdownService } from '../../common/services/shutdown.service';
+import {
+  incrementSessionReconnectAttempts,
+  incrementSessionReconnectLoopAlerts,
+} from '../../common/metrics/session-reconnect-metrics';
 import { EventsGateway } from '../events/events.gateway';
 import { WebhookService } from '../webhook/webhook.service';
 import { HookManager } from '../../core/hooks';
@@ -48,6 +54,12 @@ import {
   deliveryStatusToAck,
   ackStatusTransitionFrom,
 } from '../message/message-status.util';
+
+// Message types that carry downloadable media. Any persisted row of these types must have a media
+// marker in metadata — never NULL — or the dashboard renders an empty bubble (no placeholder) and the
+// by-type stats filter skips the row. Sources that lack the payload (wwjs own-send echo, media-free
+// history sync) get the omitted marker synthesized at the persistence chokepoints.
+const MEDIA_MESSAGE_TYPES = new Set(['image', 'video', 'audio', 'voice', 'sticker', 'document']);
 
 interface ReconnectState {
   attempts: number;
@@ -72,6 +84,13 @@ const RECONNECT_DELAY_CAP_MS = 3_600_000;
  * unrelated transient drops and one day wedge FAILED for no current reason.
  */
 const RECONNECT_STABILITY_RESET_MS = 300_000;
+/**
+ * A reconnect-loop alert fires once per this many CONSECUTIVE attempts of a session — one signal per
+ * ongoing episode, not spam per attempt. A broken-forever setup retries without limit (by design), so
+ * the 5th/10th/15th… scheduled attempt is the operator-facing tell; the streak resets via the
+ * stability window above (or onReady), so a later episode re-arms the alert from attempt 5 again.
+ */
+const RECONNECT_LOOP_ALERT_INTERVAL_ATTEMPTS = 5;
 /**
  * Session liveness watchdog. The engine layer is event-driven, so an engine that dies WITHOUT
  * firing an event (a silent Chromium crash) is never noticed: the row sits READY forever and never
@@ -665,7 +684,14 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         .map(x => {
           const m = byId.get(x)!;
           const metadata: Record<string, unknown> = {};
-          if (m.media) metadata.media = m.media;
+          if (m.media) {
+            metadata.media = m.media;
+          } else if (MEDIA_MESSAGE_TYPES.has(m.type)) {
+            // History sync maps messages media-free (footprint). Without the marker the row renders
+            // as an empty bubble — the DB copy wins over the engine-history placeholder in the
+            // dashboard merge — and the by-type stats filter would skip it.
+            metadata.media = { mimetype: '', omitted: true };
+          }
           if (m.quotedMessage) metadata.quotedMessage = m.quotedMessage;
           if (m.call) metadata.call = m.call;
           const row = this.messageRepository.create({
@@ -991,18 +1017,89 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             sessionId: id,
             source: 'Engine',
           })
-          .then(({ continue: shouldContinue, data: finalMessage }) => {
+          .then(async ({ continue: shouldContinue, data: finalMessage }) => {
             if (!shouldContinue) {
               return;
             }
 
-            // NOTE: unlike onMessage (incoming), this path intentionally does NOT mirror the message
-            // to the `messages` table. message_create ALSO fires for API-originated sends, which the
-            // REST send path already persists — saving here would double-persist them. Safe
-            // persistence of phone-composed sends needs a unique (sessionId, waMessageId) index +
-            // de-dup and is tracked as a separate enhancement; until then this path only webhooks/
-            // emits. So local message history reflects API sends + all inbound, but not sends
-            // composed on a linked phone.
+            // Persist the outgoing message so local history reflects sends composed on a linked phone
+            // (message_create is the ONLY event those produce). It also fires for API-originated sends,
+            // which the REST send path persists itself — the UNIQUE(sessionId, waMessageId) index is
+            // the atomic dedup oracle between the two writers: the loser skips its insert, and
+            // persistSentState additionally drops its redundant PENDING row when the echo won. The
+            // webhook/WS dispatch below is identical whether the insert won, lost, or failed — the
+            // message.sent contract is unchanged.
+            const outgoing: IncomingMessage = finalMessage;
+            const metadata: Record<string, unknown> = {};
+            if (outgoing.media) {
+              metadata.media = outgoing.media;
+            } else if (MEDIA_MESSAGE_TYPES.has(outgoing.type)) {
+              // The wwjs own-send echo carries no media field at all (Baileys emits an omitted
+              // marker); synthesize it so the dashboard renders the 📎 placeholder instead of an
+              // empty bubble, and the row stays countable in the by-type stats.
+              metadata.media = { mimetype: '', omitted: true };
+            }
+            if (outgoing.quotedMessage) {
+              metadata.quotedMessage = outgoing.quotedMessage;
+            }
+            if (outgoing.call) {
+              metadata.call = outgoing.call;
+            }
+
+            // The ephemeral opt-out gates STORAGE only (mirrors onMessage); the live dispatch below
+            // is today's contract and stays.
+            const mayPersist =
+              resolveFeatureFlags(this.configService).storeEphemeralMessages ||
+              !(outgoing.ephemeralDuration && outgoing.ephemeralDuration > 0);
+
+            if (mayPersist) {
+              const dbMessage = this.messageRepository.create({
+                sessionId: id,
+                // Mirror onMessage's chokepoint: an unreadable id is the empty sentinel, stored as
+                // NULL — `''` would collide on the second such message.
+                waMessageId: outgoing.id || undefined,
+                chatId: outgoing.chatId,
+                from: outgoing.from,
+                to: outgoing.to,
+                body: outgoing.body,
+                type: outgoing.type,
+                direction: MessageDirection.OUTGOING,
+                timestamp: outgoing.timestamp,
+                status: MessageStatus.SENT,
+                metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+              });
+              // The hook chain above is async; a delete()/teardown can retire this engine while it
+              // awaits. Re-check liveness so a late continuation can't persist an orphan row
+              // (mirrors onMessage).
+              if (!this.isLiveEngine(id, engine)) return;
+              let persisted = false;
+              try {
+                const result = await this.messageRepository.insert(
+                  dbMessage as unknown as QueryDeepPartialEntity<Message>,
+                );
+                Object.assign(dbMessage, result.identifiers[0] ?? {}, result.generatedMaps?.[0] ?? {});
+                persisted = true;
+              } catch (err) {
+                // Unique violation = the REST send path already persisted this API-originated send —
+                // the dedup oracle working as intended, not an error. Anything else is a real DB
+                // failure; fail open so a real send is never dropped on a transient DB fault.
+                if (!isUniqueConstraintError(err)) {
+                  this.logger.error(`Failed to save outgoing message ${outgoing.id} to database`, String(err));
+                }
+              }
+              if (persisted) {
+                // Fire-and-forget, mirroring onMessage: plugin providers (search etc.) see phone-
+                // composed sends exactly like API sends.
+                void this.hookManager
+                  .execute(
+                    'message:persisted',
+                    { sessionId: id, message: dbMessage },
+                    { sessionId: id, source: 'SessionService' },
+                  )
+                  .catch(() => undefined);
+              }
+            }
+
             void this.webhookService.dispatch(id, 'message.sent', finalMessage);
             // Emit real-time event to WebSocket clients (as message.sent, not message.received)
             this.eventsGateway.emitMessageSent(id, finalMessage);
@@ -1157,6 +1254,31 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         });
 
         this.enqueueMessageMutation(id, message.messageId, () => this.applyMessageEdit(id, message));
+      },
+      onGroupEvent: (event): void => {
+        if (!this.isLiveEngine(id, engine)) return;
+        this.logger.debug(`Group event: ${event.kind} in ${event.groupId}`, {
+          sessionId: id,
+          groupId: event.groupId,
+          kind: event.kind,
+          action: 'group_event',
+        });
+        this.dispatchGroupEvent(id, event);
+      },
+      onCall: (event: IncomingCallEvent): void => {
+        if (!this.isLiveEngine(id, engine)) return;
+        this.logger.log(`Incoming call from ${event.from}`, {
+          sessionId: id,
+          callId: event.callId,
+          isVideo: event.isVideo,
+          isGroup: event.isGroup,
+          action: 'call_received',
+        });
+        const payload: Record<string, unknown> = { ...event };
+        this.eventsGateway.emitCallReceived(id, payload);
+        void this.webhookService.dispatch(id, 'call.received', payload);
+        // Opt-in auto-reject runs AFTER the dispatch so a reject failure can never eat the event.
+        void this.maybeAutoRejectCall(id, engine, event.callId);
       },
       onDisconnected: (reason: string): void => {
         if (!this.isLiveEngine(id, engine)) return;
@@ -1367,6 +1489,103 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   /**
+   * Reflect an OUTBOUND edit (REST MessageService.editMessage) in the stored row, routed through the
+   * same per-message mutation queue as the inbound edit/reaction paths so the two writers cannot
+   * interleave (latest-write-wins holds across both directions). Same best-effort semantics as
+   * applyMessageEdit: a missing row or a failed write must not fail the request — the engine edit
+   * already succeeded. Resolves once the queued write has run.
+   */
+  async recordOutboundMessageEdit(sessionId: string, messageId: string, body: string): Promise<void> {
+    await new Promise<void>(resolve => {
+      this.enqueueMessageMutation(sessionId, messageId, async () => {
+        try {
+          await this.messageRepository.update({ sessionId, waMessageId: messageId }, { body });
+        } catch (err) {
+          this.logger.warn(`Failed to update stored body of edited message ${messageId}`, { error: String(err) });
+        } finally {
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Fan a neutral engine GroupEvent out to consumers: the WebSocket room and the webhook stream.
+   * The `kind` selects the event name (`group.join` / `group.leave` / `group.update`); the payload
+   * is the same plain camelCase shape on both channels, with `kind` itself carried by the name.
+   * There is no persistence here — group membership/metadata lives in the engine, not the message
+   * store — so unlike message edits there is nothing to apply before notifying.
+   */
+  private dispatchGroupEvent(id: string, event: GroupEvent): void {
+    const payload: Record<string, unknown> = {
+      groupId: event.groupId,
+      participantIds: event.participantIds,
+      timestamp: event.timestamp,
+    };
+    // Optional fields are added only when present so consumers never see explicit `undefined`s.
+    if (event.actorId !== undefined) {
+      payload.actorId = event.actorId;
+    }
+    if (event.changes !== undefined) {
+      payload.changes = event.changes;
+    }
+
+    switch (event.kind) {
+      case 'join':
+        this.eventsGateway.emitGroupJoin(id, payload);
+        void this.webhookService.dispatch(id, 'group.join', payload);
+        break;
+      case 'leave':
+        this.eventsGateway.emitGroupLeave(id, payload);
+        void this.webhookService.dispatch(id, 'group.leave', payload);
+        break;
+      case 'update':
+        this.eventsGateway.emitGroupUpdate(id, payload);
+        void this.webhookService.dispatch(id, 'group.update', payload);
+        break;
+    }
+  }
+
+  /**
+   * Reject a ringing call when the session opted in via `config.autoRejectCalls`. The session row
+   * is re-read here rather than trusting initializeEngine's closure snapshot — a call can arrive
+   * long after start, and the row is the only always-current source (mirrors
+   * handleEngineDisconnected). `config` is an untyped JSON column: only a strict boolean `true`
+   * opts in — truthy strings/numbers are ignored (the coercion discipline of
+   * resolveReconnectConfig). Never throws: a reject failure is logged, and the `call.received`
+   * dispatch already happened before this ran.
+   */
+  private async maybeAutoRejectCall(id: string, engine: IWhatsAppEngine, callId: string): Promise<void> {
+    let session: Session | null;
+    try {
+      session = await this.sessionRepository.findOne({ where: { id } });
+    } catch (err) {
+      this.logger.error('Failed to reload the session for call auto-reject', String(err), {
+        sessionId: id,
+        action: 'call_auto_reject_error',
+      });
+      return;
+    }
+    if (session?.config?.autoRejectCalls !== true) {
+      return;
+    }
+    try {
+      await engine.rejectCall(callId);
+      this.logger.log('Auto-rejected incoming call', {
+        sessionId: id,
+        callId,
+        action: 'call_auto_rejected',
+      });
+    } catch (err) {
+      this.logger.warn('Failed to auto-reject incoming call', {
+        sessionId: id,
+        callId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * Shared disconnect handling for BOTH the engine's onDisconnected callback and the liveness
    * watchdog: notify consumers (webhook + WS + hook), persist DISCONNECTED, then schedule a
    * reconnect. The session row is re-read here rather than trusting a caller-held snapshot — the
@@ -1563,6 +1782,27 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         action: 'reconnect_scheduled',
       },
     );
+
+    incrementSessionReconnectAttempts();
+
+    // Loop alert every RECONNECT_LOOP_ALERT_INTERVAL_ATTEMPTS consecutive attempts: with the default
+    // unlimited budget a permanently-broken setup retries forever, and this is the one operator-facing
+    // signal per ongoing episode (not per attempt). The streak resets via the stability window/onReady,
+    // so a fresh episode re-arms the alert instead of continuing an old cadence.
+    if (state.attempts > 0 && state.attempts % RECONNECT_LOOP_ALERT_INTERVAL_ATTEMPTS === 0) {
+      this.logger.warn(`Session is reconnect-looping: attempt ${state.attempts} scheduled`, {
+        sessionId: id,
+        attempts: state.attempts,
+        nextDelayMs: delay,
+        action: 'reconnect_loop',
+      });
+      incrementSessionReconnectLoopAlerts();
+      void this.webhookService.dispatch(id, 'session.reconnect_loop', {
+        sessionId: id,
+        attempts: state.attempts,
+        nextDelayMs: delay,
+      });
+    }
 
     // Clear any timer a prior scheduleReconnect left pending so two back-to-back disconnects
     // don't stack two timers (which would run executeReconnect twice and double-init the engine).

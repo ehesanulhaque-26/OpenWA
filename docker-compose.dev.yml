@@ -51,6 +51,11 @@ services:
       - XDG_CONFIG_HOME=/tmp/.config
       - XDG_CACHE_HOME=/tmp/.cache
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Restart-resilience: auto-start previously authenticated sessions on boot. The liveness
+      # watchdog (#798) only covers a RUNNING container — a `compose down/up` or rebuild kills every
+      # engine, and without this flag sessions sit at `disconnected` until started by hand. Default
+      # ON for the dev compose (single-operator box); the app-level default stays OFF.
+      - AUTO_START_SESSIONS=${AUTO_START_SESSIONS:-true}
       - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
       - DATABASE_NAME=${DATABASE_NAME:-}
       - DATABASE_SYNCHRONIZE=${DATABASE_SYNCHRONIZE:-true}
@@ -86,6 +91,9 @@ services:
       - RATE_LIMIT_MEDIUM_LIMIT=${RATE_LIMIT_MEDIUM_LIMIT:-}
       - RATE_LIMIT_LONG_TTL=${RATE_LIMIT_LONG_TTL:-}
       - RATE_LIMIT_LONG_LIMIT=${RATE_LIMIT_LONG_LIMIT:-}
+      # Max request body size. Base64 media sends ride in the JSON body, so the default is generous;
+      # raise this for large documents (e.g. BODY_SIZE_LIMIT=50mb). Blank keeps the app default of 25mb.
+      - BODY_SIZE_LIMIT=${BODY_SIZE_LIMIT:-}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - QUEUE_ENABLED=${QUEUE_ENABLED:-false}
     volumes:

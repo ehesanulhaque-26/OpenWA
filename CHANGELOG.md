@@ -7,8 +7,195 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Outbound message edit.** `POST /api/sessions/:sessionId/messages/edit` edits the text of a
+  message sent by the account, on both engines (whatsapp-web.js `Message.edit`, Baileys
+  `sendMessage` with an `edit` key). Attempting to edit another sender's message fails with `403`,
+  an unknown message/chat with `404`, and the stored record's body is updated through the same
+  serialized mutation queue as inbound edit events. `message.edited` continues to cover inbound edits.
+- **Live group events.** `group.join`, `group.leave`, and `group.update` are now actually
+  dispatched — to webhooks (HMAC-signed, with stable idempotency keys) and to Socket.IO
+  subscribers — on both engines. They were previously accepted in subscriptions but never emitted
+  ("reserved"). whatsapp-web.js maps `group_join`/`group_leave`/`group_update` notifications;
+  Baileys maps `group-participants.update` (add/remove) and `groups.update` (subject, description,
+  announce/locked changes). On Baileys, full-metadata snapshots (emitted by the library on
+  reconnect and on `GET /groups`) are filtered out so they never surface as fabricated updates;
+  genuine changes replayed from an offline window are dispatched with the receipt time as their
+  `timestamp` (the engine does not forward the original occurrence time).
+- **Join groups & group settings.** `POST /api/sessions/:sessionId/groups/join` joins a group via
+  invite code (an invalid/expired code returns a typed `400`). `GET`/`PUT
+  /api/sessions/:sessionId/groups/:groupId/settings` read and update the admin-only flags
+  (`announce`, `locked`) and the disappearing-message timer (`ephemeralSeconds`, Baileys only — it
+  returns a documented `501` on whatsapp-web.js, which has no such API). A settings patch applies
+  the timer first, so a `501` can never silently follow an already-applied flag change, and
+  explicit `null` fields are rejected with `400`.
+- **Own-profile management.** `PUT /api/sessions/:sessionId/profile/name`, `/status`, and
+  `/picture` set the linked account's display name, about text, and profile picture on both engines.
+- **Incoming-call handling.** A new `call.received` webhook + Socket.IO event fires when an
+  incoming call starts ringing (both engines; stale offers replayed from an offline window and the
+  account's own outgoing calls are not emitted). `POST /api/sessions/:sessionId/calls/:callId/reject`
+  rejects a ringing call, and the per-session `config.autoRejectCalls: true` flag (settable at
+  session creation) rejects every incoming call automatically — the event is still dispatched
+  first. Unknown or expired call ids return `404`.
+- **Docs: official plugin catalog is now discoverable.** The README feature table points to the
+  first-party Integration Fabric plugins (Chatwoot, Typebot, …) in the
+  [OpenWA-plugins](https://github.com/rmyndharis/OpenWA-plugins) repo, and
+  `docs/23-community-integrations.md` clarifies that it lists community projects only.
+
 ### Fixed
 
+- Running more than one session no longer corrupts the Chromium launch flags of every
+  session started after the first. The whatsapp-web.js adapter appended its per-session
+  arguments (`--proxy-server`, and the `--openwa-session=<id>` process marker) directly
+  to the array returned by `engine.puppeteer.args` — but `ConfigService` hands back a
+  live reference into the cached configuration tree, so every session shared one array
+  and each start mutated it permanently. Three symptoms followed: the argument list grew
+  without bound across starts and reconnects until Chromium refused to launch; a session
+  configured without a proxy inherited the previous session's `--proxy-server` and routed
+  its traffic through it; and because the orphaned-Chromium sweep identifies processes by
+  substring-matching the session marker, a restart of one session could `SIGKILL` another
+  session's healthy browser. The adapter now copies the array before appending, so the
+  shared configuration is never mutated. Fixed in #840 — thanks @szmazhr.
+
+- The dashboard webhook editor now offers `session.reconnect_loop` (accepted by the backend since
+  #800 but never listed in the UI), and the Java/Python SDK event types now include it as well.
+- Typing a session name in the dashboard's **Create New Session** dialog no longer
+  stalls after the first character. The shared `Modal` component ran its initial-focus
+  step inside a `useEffect` whose dependency array included `onClose`, and callers pass
+  an inline arrow for that prop (`onClose={() => setShowCreateModal(false)}`) — a fresh
+  reference on every parent render. Each keystroke updated the field, re-rendered the
+  page, produced a new `onClose`, re-ran the effect, and the initial-focus step yanked
+  focus back to the dialog's close button, so only one character could be typed before
+  the input lost focus. The `onClose` is now held in a ref and the open/close effect
+  depends on `[open]` alone, so focus is applied once when the dialog opens and stays
+  put across parent re-renders. Reported in #837, fixed in #838.
+
+## [0.10.2] - 2026-07-20
+
+### Added
+
+- The README gains an end-user-facing **"Before you connect a number"** section that consolidates
+  the recurring ban-risk / safe-sending questions: it states plainly that OpenWA is unofficial (it
+  uses `whatsapp-web.js` and `@whiskeysockets/baileys`, not Meta's Cloud API), includes a per-engine
+  ban-risk vs. resource-cost trade-off table, six practical safe-sending guardrails (warm-up,
+  no cold-blast, rate-limit, opt-in recipients, keep a fallback, mind the hosting IP), calls out the
+  known cold-contact first-send silent drop (tracked in #830) as server-side WhatsApp policy rather
+  than an OpenWA bug, and points regulated deployments to the official Cloud API. Responds to the
+  ban-risk questions raised in discussions #87, #154, #436, #687, and #694.
+
+### Fixed
+
+- `BODY_SIZE_LIMIT` now actually takes effect under Docker Compose. The variable was documented in
+  `.env.example` and read correctly by the app (`src/main.ts` → `resolveBodyLimit()`), but neither
+  `docker-compose.yml` nor `docker-compose.dev.yml` forwarded it into the container, so a value set
+  in `.env` stayed on the host and the app fell back to its default — large base64 media sends
+  returned `413 Payload Too Large`. Both compose files now pass `BODY_SIZE_LIMIT` through, matching
+  the existing `${VAR:-}` convention; blank/unset keeps the 25 MB app default. Reported in #540,
+  tracked in #831, fixed in #832.
+- The dashboard's integration-instance create form now offers an optional **ingress secret** field,
+  so providers that fix their own webhook signing secret (e.g. Chatwoot's per-webhook secret, which
+  cannot be replaced with a custom value) can be integrated without resorting to the REST API.
+  Previously the form always auto-generated a secret that could never match the provider's, so every
+  webhook delivery failed HMAC verification with a 401 and agent replies never arrived (#821). The
+  field mirrors the API's validation rule (blank = auto-generate, otherwise at least 16 characters).
+
+## [0.10.1] - 2026-07-20
+
+### Added
+
+- Design draft `docs/28-multitenancy.md`: the enterprise multitenancy proposal — tenant entity,
+  named users with per-tenant roles, TOTP two-factor auth, per-tenant branding/isolation/quotas,
+  and the migration path from single-operator deployments (nothing implemented yet).
+
+- The Chats room header now shows the contact or group profile picture (fetched through the existing
+  `GET /sessions/:id/contacts/:id/profile-picture` endpoint, cached for one hour, with the icon
+  fallback preserved when the engine returns no URL), a floating scroll-to-bottom button appears in
+  the messages pane once the reader scrolls away from the latest message, and the room header shows
+  the prettified phone number (e.g. `628123456789@c.us` → `+62 812 345 6789`) as the primary
+  subtitle for personal chats — with the raw JID retained on a muted monospace line for technical
+  use (lid resolution, webhook payloads, group ids). The composer send icon was also enlarged to
+  better match its 48 px button.
+- The linked-device name shown in WhatsApp's Settings → Linked Devices is now brandable via the
+  optional `BAILEYS_BROWSER_NAME` env var (applies to new pairings; default unchanged: `OpenWA`).
+  Thanks @clicsoluciones. (#822)
+
+### Fixed
+
+- The chat header no longer formats a LID privacy id as a fake phone number (e.g. "+26 281 346
+  125 0071"): digit-only LIDs and group ids are rejected by the phone formatter, and personal @lid
+  chats now resolve and display the real number through the engine (cached a day). Chat list rows
+  also render profile pictures now, sharing the room header's 1-hour cache instead of static icons.
+- Chat-list avatars no longer burst into HTTP 429s: profile pictures for the whole sidebar are
+  batch-resolved in ONE request (`GET .../contacts/profile-pictures?ids=…`, up to 50 ids) instead
+  of one parallel fetch per row, which exhausted the per-IP throttle.
+- Chat-list avatars no longer stall on long sidebars: the batch endpoint caps engine lookups at a
+  per-id deadline (a hanging id resolves null instead of holding the whole batch), and the request
+  now resolves the sidebar's TOP 50 ids in list order so visible rows get their pictures first.
+
+## [0.10.0] - 2026-07-19
+
+### Added
+
+- Reconnect-loop observability: every scheduled reconnect attempt is counted in the new
+  `openwa_session_reconnect_attempts_total` Prometheus counter, and every fifth consecutive attempt
+  of an episode emits a `session.reconnect_loop` webhook event (`{ sessionId, attempts, nextDelayMs }`),
+  a structured warning log, and an `openwa_session_reconnect_loop_alerts_total` counter tick — a
+  session stuck in a reconnect loop is now visible to operators instead of retrying silently forever.
+  The episode streak re-arms after a stable connection, so recovered sessions do not keep alerting.
+- The whatsapp-web.js engine now sweeps orphaned Chromium processes before each (re)launch: browsers
+  are started with an `--openwa-session=<id>` marker arg, and any leftover browser process carrying
+  this session's marker from a previous process lifetime (e.g. after the gateway itself was killed)
+  is terminated before the new launch, alongside the existing stale Singleton-file cleanup.
+- Messages composed on a linked phone are now persisted to local history (previously only API
+  sends and inbound messages were stored). Deduplication against the REST send path is atomic on the
+  existing unique message index, and delivery/read state advances via acks on these rows as well.
+- The whatsapp-web.js own-send echo now downloads media through the same capped inbound path as
+  inbound messages (declared-size pre-gate, timeout, concurrency limiter), so phone-composed images
+  persist and render with their real payload.
+- The dashboard gains a shared accessible modal dialog — Escape and overlay dismissal, a focus
+  trap with initial focus, background scroll lock, and `role="dialog"` semantics. The Sessions page
+  modals are the first to use it, gaining those behaviors plus a pinned header/footer with a
+  scrolling body on long content.
+- The dashboard Message Tester now covers every outbound message type: in addition to
+  text/image/video/audio/document it can send location, contact-card, sticker, and native poll
+  messages, forward an existing message to another chat, and submit a bulk text batch (recipients
+  one per line, optional inter-message delay) with live batch progress polling and a cancel control
+  in the response panel.
+
+### Changed
+
+- Dashboard theming is simplified to a single light/dark toggle button; the accent-palette picker
+  was removed for maintainability. The global `h2` is a real heading
+  again instead of a forced small uppercase eyebrow (section/card titles were smaller than body
+  text); the eyebrow look survives as an opt-in `.eyebrow` class.
+  The stored theme is applied before first paint, so standalone
+  routes no longer flash the OS default, and the message-analytics chart now defaults to 24h.
+- The dev compose defaults `AUTO_START_SESSIONS=true`, so previously authenticated sessions come
+  back by themselves after a container restart (the application-level default stays off).
+- Dashboard action buttons are consolidated into shared global `.btn-primary`/`.btn-secondary`/
+  `.btn-danger` classes (28 page-scoped copies removed), so padding, radius, hover, and disabled
+  states are consistent across pages; the Plugins hover now uses the `--primary-hover` token and
+  danger buttons use the single `--error` red.
+- The Infrastructure page's inline-styled elements (including the restart/migration progress modal) are
+  moved to scoped CSS classes, so all surfaces stay on the design-token system.
+- Decorative hover/selection effects are flattened for a more professional look: the install/config
+  tab active state no longer lifts or glows, the restart progress bar is a flat primary fill instead
+  of a gradient, and the emoji-picker button no longer scales on hover.
+
+### Removed
+
+- Verified dead dashboard code: unused CSS across multiple pages, dead client methods and utilities,
+  unused image assets, and 39 unused i18n keys across all locales.
+- Verified-unused dashboard i18n keys (19 per locale across all 11 locales): dead `common.*`
+  vocabulary and page-specific keys with zero references in the app.
+
+### Fixed
+
+- Boot no longer warns about (and the plugin list no longer shows) ghost entries for the legacy
+  bundled extensions removed in v0.7 (`auto-reply`, `translation`): when their code directory has no
+  manifest, the stale registry entry is pruned at startup. The guard is scoped to those known ids so
+  a temporarily unreadable plugin directory never loses its persisted config.
 - Long-lived sessions no longer die permanently after hours of uptime. A dead whatsapp-web.js
   Chromium (browser process exit, renderer crash, or closed page) is now detected through the
   puppeteer lifecycle handles and driven through the standard disconnect → reconnect pipeline, and
@@ -19,6 +206,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Baileys engine, `connectionReplaced` (440) is now terminal instead of fighting the other instance,
   duplicate close events no longer burn retry attempts, and a failed reconnect attempt no longer
   fails the session.
+- Harden session stability further: the Baileys engine now treats `forbidden` (403, banned/blocked
+  account) as terminal instead of retrying forever; stale Chromium `SingletonLock`/`SingletonSocket`/
+  `SingletonCookie` files are removed before each whatsapp-web.js (re)launch so a previously
+  force-killed browser can never block startup; and page transport errors (`Protocol error`,
+  `Target closed`, detached frame, …) observed during send/query operations are now treated as an
+  immediate death signal, cutting dead-session detection from minutes to the first failed call.
+- Sent images no longer vanish from the chat thread: the realtime own-send echo carries no media
+  payload by design, and the live cache merge replaced metadata wholesale, wiping the optimistic
+  bubble's base64. Metadata now merges per field (a real payload always beats a payload-less echo
+  marker), and the post-send reconciliation folds the optimistic copy into the echo row.
+- Chat thread scrolling now behaves on every path: opens at the latest message, restores the exact
+  per-chat position when returning (position is saved continuously, not read after the content
+  swap), and stays pinned while media decodes instead of clamping the restore to the pre-decode
+  height — releasing cleanly on user scroll.
+- The messages-by-type chart no longer shows a misleading Unknown slice: rows with no body and no
+  metadata (content-less system/event rows) are excluded from the aggregation.
+- Full-text search self-heals its schema at boot when migrations are skipped (`DATABASE_SYNCHRONIZE=true`),
+  and SQLite FTS5 queries are sanitized per token, so phone numbers, chat identifiers, quotes, and
+  parentheses no longer fail as malformed queries.
+- Audit log rows now carry the resolved API key and client IP for every call site: the values are
+  stamped into the per-request async context by the auth guard and auto-filled on write (explicit
+  context still wins).
+- Dashboard CSS no longer references undefined custom properties or fallbacks from a foreign
+  design system: every danger/danger-color usage now resolves to the single `--error` token, wrong
+  `--primary`/`--text-secondary`/`--border`/`--warning` fallbacks are dropped, and the plugin
+  instances "off" badge shows its background again (it referenced an undefined `--bg-secondary`).
+- Dashboard readability and behavior: the send button stays readable when disabled, API Keys badges
+  render on desktop (rules were stranded in a mobile-only media query), the Templates page gets real
+  primary/secondary button styles, fourteen dark-mode selectors are corrected so dark mode applies,
+  Sessions modals regain the 90vh cap with a scrolling body, QR provisioning uses the realtime push
+  with fetching gated to `qr_ready` (no more expected-but-noisy 400 console errors), and enabling a
+  plugin with unset required config opens its config dialog with a warning instead of failing with a
+  raw sandbox error.
+- Plugins whose config schema declares field defaults no longer fail to enable with those values
+  missing: defaults are now seeded into the stored config at load time (fresh installs and every
+  boot), without ever overwriting explicit values. Required fields without a declared default still
+  need real operator input.
 
 ## [0.9.0] - 2026-07-18
 
@@ -55,6 +279,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.19] - 2026-07-17
 
 ### Added
+
 - **Official Go SDK (`sdk/go`).** Hand-written, stdlib-only (no third-party dependencies) Go client
   covering the user-facing API surface, joining the JavaScript/Python/PHP/Java clients. Entry point is
   `openwa.New(baseURL, apiKey, opts...)`, which returns a concurrency-safe `*Client` whose exported
@@ -75,6 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test time. Requires Go 1.22+. Thanks @Revelts.
 
 ### Changed
+
 - **v0.8.18's whatsapp-web.js id-rename fix also restored the Chats page (docs only).** The v0.8.18 entry
   credits that fix with repairing inbound media downloads, message ids, acks, reply quoting, and reactions,
   but never mentions `GET /sessions/{id}/chats` — which the same patch repaired as well. The rename broke the
@@ -145,11 +371,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Corrected the send-response documentation (docs only).** The guidance added in #739 overstated what a
   stalled send tells you: it said a message resting at `sent` for a recipient you have never reached is
   "almost certainly a number that is not on WhatsApp." That inference does not hold in the other
-  direction — a *registered* recipient whose device has not come online since the send stays at `sent`
+  direction — a _registered_ recipient whose device has not come online since the send stays at `sent`
   indefinitely too, by design, so the state is not diagnostic on its own. The unevidenced claim that an
   unregistered recipient is "the most common cause" of a send that never arrives is gone, as is the
   description of what the message looks like in a WhatsApp client, which is not ours to assert. The
-  section also claimed *every* send route returns `201` with `{ messageId, timestamp }`; `POST send-bulk`
+  section also claimed _every_ send route returns `201` with `{ messageId, timestamp }`; `POST send-bulk`
   returns `202` with a batch envelope, and the `status/send-*` routes return a `statusId` and an ISO
   timestamp rather than a `messageId` and epoch seconds. Both exceptions are now stated where the rule
   is. Finally, the documented `status` lifecycle omitted its terminal error state: WhatsApp reporting an
@@ -196,7 +422,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absent, but missed the busiest path of all: `buildIncomingMessageBase`, which runs on every message
   that arrives (`onMessage`) and every message the account sends from a linked phone
   (`onMessage_create`). It read `msg.id._serialized` unguarded — and its parameter type declared the
-  id as `{ _serialized: string }`, so the renamed field was not merely unread but *unreachable*
+  id as `{ _serialized: string }`, so the renamed field was not merely unread but _unreachable_
   without a cast, and the `id: string` it produced was `undefined` at runtime. On an affected build
   without the build-time backport applied, every inbound message reached the webhook, the WebSocket
   and the database with no id: nothing to dedup on, nothing to quote in a reply, nothing for an ack
@@ -217,7 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "+N" trend arrow beneath it was not a delta at all: it rendered the current READY count as though it
   were a period-over-period gain, so a steady deployment appeared to be permanently growing. The card
   now reports the READY count (relabelled "Connected Sessions") with a plain `{running} running ·
-  {total} total` breakdown, and the fake trend indicator is gone. Thanks @kabir74705 for spotting both.
+{total} total` breakdown, and the fake trend indicator is gone. Thanks @kabir74705 for spotting both.
 
 - **The whatsapp-web.js backport can no longer latch in a half-patched dependency.** The patcher proves a
   tree is whole before standing down, and #759 added that check precisely so a run that died mid-apply
@@ -231,13 +457,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image build runs the patcher directly, so it now fails the build on such a tree instead of shipping it.
   Separately, the half-patched error was the only one of the four not marked as leaving a partial tree, so
   `--best-effort` downgraded it to a warning; it now exits non-zero like the other three. Note this makes
-  the tree *reported* on the `npm install` path rather than rejected there — the `postinstall` hook
+  the tree _reported_ on the `npm install` path rather than rejected there — the `postinstall` hook
   discards the patcher's exit code, so the install still succeeds; that is pre-existing and deliberately
   untouched, since failing `npm install` outright is the trade the flag exists to avoid. Both fixes are
   regression-tested, including the `--best-effort` path.
 
 - **A status post no longer claims success it cannot prove, and no longer throws away a readable id.**
-  #762 established that `whatsapp-web.js` can *resolve* `undefined` instead of throwing, and that reporting
+  #762 established that `whatsapp-web.js` can _resolve_ `undefined` instead of throwing, and that reporting
   that as success is unrecoverable — so a send with no message back now fails loudly. Status posts were
   left on the old behavior: they returned **201** with an empty `statusId` and a `new Date()` invented on
   the spot, for a status that may never have been published. Their case is in fact simpler than a send's —
@@ -254,7 +480,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Message Tester no longer invents HTTP status codes.** Its result banner rendered one of two
   hardcoded strings — `200 OK - Success` or `400 - Failed` — for every outcome, in all eleven locales.
   Neither number was ever read from the response. Send routes return **201**, not 200, so the success
-  banner was wrong on every successful send; and *any* failure displayed `400`, including a server 500
+  banner was wrong on every successful send; and _any_ failure displayed `400`, including a server 500
   and the recipient pre-check that short-circuits in the browser without issuing a request at all. The
   banner now states the outcome and, when a request actually reached the gateway, the real status the
   gateway returned — which `services/api.ts` already attaches to the error for exactly this purpose.
@@ -301,7 +527,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absent and the lookup falls back to `id`, as before. Refs #755.
 
 - **A failed group creation now reports why it failed.** `whatsapp-web.js` signals a failed
-  `createGroup` by *resolving* with a plain string (`'CreateGroupError: …'`) instead of throwing, and
+  `createGroup` by _resolving_ with a plain string (`'CreateGroupError: …'`) instead of throwing, and
   its typings say so (`Promise<CreateGroupResult | string>`) — but the adapter cast that union away and
   read `.gid` off the string, so the reason upstream gave us was replaced by an opaque
   `TypeError`. The union is handled, and an unreadable group id now fails loudly rather than being
@@ -315,7 +541,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advanced" line behind. It is now dropped at the adapter boundary, where the reason is still visible.
 
 - **A send whose message can't be read back no longer crashes, and never claims a delivery it can't
-  prove.** `whatsapp-web.js`'s `Client.sendMessage()` can *resolve* with `undefined` instead of
+  prove.** `whatsapp-web.js`'s `Client.sendMessage()` can _resolve_ with `undefined` instead of
   throwing, while its typings declare `Promise<Message>` — so the adapter's `msg.id._serialized` reads
   surfaced as an opaque `TypeError: Cannot read properties of undefined (reading 'id')` and a 500, at
   seven send sites. All of them now route through one helper that distinguishes the two cases the
@@ -327,7 +553,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(sessionId, waMessageId)` unique index and silently drop a bulk row. Refs #757.
 
 ### Security
-
 
 ## [0.8.18] - 2026-07-17
 
@@ -414,7 +639,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaring a huge entry size could drive an unbounded `Buffer.alloc` and exhaust memory during
   extraction. This closes the declared-size allocation vector on the plugin marketplace install path
   (`src/modules/plugins/plugin-installer.ts`), complementing the project's own `readEntryData()` guard
-  that already caps *decompressed* bytes via zlib `maxOutputLength`. The two adm-zip 0.6.0 behavior
+  that already caps _decompressed_ bytes via zlib `maxOutputLength`. The two adm-zip 0.6.0 behavior
   changes (`extractEntryTo` subdirectory preservation, non-fatal `utimes`) touch APIs this project does
   not use. The now-redundant `@types/adm-zip` devDependency is dropped as well — adm-zip 0.6.0 ships its
   own `types.d.ts`.
@@ -495,8 +720,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Chat labels on the Baileys engine.** `addLabelToChat` and `removeLabelFromChat` now work on
   the Baileys engine — 1:1 to `sock.addChatLabel(chatId, labelId)` / `sock.removeChatLabel(chatId,
-  labelId)` instead of returning 501. WhatsApp-Business-only (rejects on personal accounts). Label
-  *listing* (`getLabels` / `getLabelById` / `getChatLabels`) remains unavailable on Baileys (no
+labelId)` instead of returning 501. WhatsApp-Business-only (rejects on personal accounts). Label
+  _listing_ (`getLabels` / `getLabelById` / `getChatLabels`) remains unavailable on Baileys (no
   first-class library API — see `docs/engine-capability-matrix.md`).
 
 - **Status delete on the whatsapp-web.js engine.** `deleteStatus(statusId)` now works on
@@ -508,7 +733,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getContactStatus(contactId)` now return contact "stories" (24h status posts) via
   whatsapp-web.js `getBroadcasts()` / `getBroadcastById()` flattened to `Status[]` (contact via
   `broadcast.getContact()`, type from `MessageTypes`, 24h TTL) instead of stubbing to `[]`. The
-  Baileys engine still cannot read stories — `fetchStatus` returns the *about* text, not stories
+  Baileys engine still cannot read stories — `fetchStatus` returns the _about_ text, not stories
   (documented as a library limitation).
 
 - **Channel lookup / subscribe / unsubscribe on the Baileys engine.** `getChannelById(id)`,
@@ -567,7 +792,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since the SQLite `DATABASE_NAME` file-path validation tightened (it pinned an in-memory data DB,
   which that rule rejects). The data connection now uses a temp-dir SQLite file that is removed on
   exit, so the snapshot generator runs hermetically again.
-
 
 ## [0.8.16] - 2026-07-12
 
