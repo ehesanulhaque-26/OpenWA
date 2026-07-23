@@ -51,6 +51,7 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     curl \
     procps \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Environment variables
@@ -84,6 +85,10 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/puppeteer-chrome
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/dashboard/dist ./dashboard/dist
 
+# Copy Railway startup script
+COPY scripts/railway-startup.sh /usr/local/bin/railway-startup.sh
+RUN chmod +x /usr/local/bin/railway-startup.sh
+
 # Create data directories with proper ownership BEFORE switching to non-root user
 # This ensures the directories exist even if Railway doesn't mount volumes
 RUN mkdir -p /app/data/sessions /app/data/media /app/data/plugins && \
@@ -100,6 +105,6 @@ USER node
 # Expose port (Railway will set PORT env var)
 EXPOSE 2785
 
-# Start the application
+# Start the application with migration support
 # Railway sets PORT env var
-CMD ["node", "dist/main"]
+CMD ["/usr/local/bin/railway-startup.sh"]
