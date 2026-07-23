@@ -160,8 +160,6 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
           ],
           migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
           logging: enableSqlLogging,
-          // Migration subscriber for logging
-          subscribers: [],
         };
 
         if (isPostgres) {
