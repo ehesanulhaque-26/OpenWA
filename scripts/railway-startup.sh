@@ -7,10 +7,51 @@
 # 2. Ensures the PostgreSQL schema exists (for non-public schemas)
 # 3. Starts the application (migrations run automatically on boot)
 #
+# Supports multiple environment variable formats:
+# - DATABASE_HOST/PORT/NAME/USERNAME/PASSWORD (standard)
+# - DATABASE_URL (connection string)
+# - Railway references: pguser, pgpassword, pgdatabase, pg port, database url, etc.
+#
 set -euo pipefail
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# =============================================================================
+# PostgreSQL URL Parser
+# =============================================================================
+# Parse a PostgreSQL URL and extract components
+parse_pg_url() {
+    local url="$1"
+    # Remove protocol if present
+    url="${url#postgresql://}"
+    url="${url#postgres://}"
+    
+    # Extract components using parameter expansion
+    local auth="${url%%@*}"
+    local host_port_db="${url#*@}"
+    
+    local user="${auth%%:*}"
+    local password="${auth#*:}"
+    if [ "$password" = "$auth" ]; then
+        password=""
+    fi
+    
+    local host="${host_port_db%%/*}"
+    local db_path="${host_port_db#*/}"
+    local database="${db_path%%\?*}"
+    if [ -z "$database" ]; then
+        database="postgres"
+    fi
+    
+    local port="${host#*:}"
+    if [ "$port" = "$host" ]; then
+        port="5432"
+    fi
+    host="${host%%:*}"
+    
+    echo "${host}|${port}|${database}|${user}|${password}"
 }
 
 # =============================================================================
@@ -20,11 +61,56 @@ if [ "${DATABASE_TYPE:-sqlite}" = "postgres" ]; then
     log "PostgreSQL mode detected - checking database connectivity..."
 
     # PostgreSQL connection parameters
-    PGHOST="${DATABASE_HOST:-localhost}"
-    PGPORT="${DATABASE_PORT:-5432}"
-    PGUSER="${DATABASE_USERNAME:-postgres}"
-    PGPASSWORD="${DATABASE_PASSWORD:-}"
-    PGDATABASE="${DATABASE_NAME:-railway}"
+    # Support multiple environment variable formats:
+    # 1. Explicit DATABASE_* variables
+    # 2. DATABASE_URL connection string
+    # 3. Railway reference variables (pguser, pgpassword, pgdatabase, pg port)
+    # 4. Railway database URL references (database url, database public url)
+    
+    # Default values
+    PGHOST=""
+    PGPORT="5432"
+    PGUSER=""
+    PGPASSWORD=""
+    PGDATABASE=""
+    
+    # Priority 1: Explicit DATABASE_* variables
+    if [ -n "${DATABASE_HOST:-}" ] && [ -n "${DATABASE_USERNAME:-}" ]; then
+        log "Using explicit DATABASE_* variables"
+        PGHOST="${DATABASE_HOST}"
+        PGPORT="${DATABASE_PORT:-5432}"
+        PGUSER="${DATABASE_USERNAME}"
+        PGPASSWORD="${DATABASE_PASSWORD:-}"
+        PGDATABASE="${DATABASE_NAME:-postgres}"
+    # Priority 2: DATABASE_URL
+    elif [ -n "${DATABASE_URL:-}" ]; then
+        log "Using DATABASE_URL"
+        IFS='|' read -r PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD <<< "$(parse_pg_url "$DATABASE_URL")"
+    # Priority 3: Railway reference variables
+    elif [ -n "${pguser:-}" ] || [ -n "${PGUSER:-}" ]; then
+        log "Using Railway reference variables"
+        PGHOST="${PGHOST:-${DATABASE_HOST:-}}"
+        PGPORT="${PGPORT:-${DATABASE_PORT:-${PORT:-${pg port:-5432}}}"
+        PGUSER="${pguser:-${PGUSER:-${DATABASE_USERNAME:-postgres}}"
+        PGPASSWORD="${pgpassword:-${PGPASSWORD:-${DATABASE_PASSWORD:-}}"
+        PGDATABASE="${pgdatabase:-${postgresdb:-${PGDATABASE:-${DATABASE_NAME:-postgres}}}"
+    # Priority 4: Railway database URL references
+    elif [ -n "${database public url:-}" ]; then
+        log "Using Railway 'database public url' reference"
+        IFS='|' read -r PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD <<< "$(parse_pg_url "${database public url}")"
+    elif [ -n "${database url:-}" ]; then
+        log "Using Railway 'database url' reference"
+        IFS='|' read -r PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD <<< "$(parse_pg_url "${database url}")"
+    else
+        # Fallback to defaults
+        log "Using default PostgreSQL settings"
+        PGHOST="${DATABASE_HOST:-localhost}"
+        PGPORT="${DATABASE_PORT:-5432}"
+        PGUSER="${DATABASE_USERNAME:-postgres}"
+        PGPASSWORD="${DATABASE_PASSWORD:-}"
+        PGDATABASE="${DATABASE_NAME:-postgres}"
+    fi
+    
     PGSCHEMA="${POSTGRES_SCHEMA:-public}"
 
     # Function to check PostgreSQL connectivity
@@ -74,8 +160,8 @@ if [ "${DATABASE_TYPE:-sqlite}" = "postgres" ]; then
     # Wait for PostgreSQL and create schema
     if ! wait_for_postgres; then
         log "FATAL: Could not connect to PostgreSQL"
-        log "FATAL: Please verify DATABASE_HOST, DATABASE_PORT, DATABASE_USERNAME, DATABASE_PASSWORD are correct"
-        log "FATAL: And that Railway PostgreSQL is properly linked to this service"
+        log "FATAL: Please verify PostgreSQL is linked to the OpenWA service in Railway"
+        log "FATAL: And that DATABASE_TYPE=postgres is set"
         exit 1
     fi
 

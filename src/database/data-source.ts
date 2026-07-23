@@ -1,6 +1,7 @@
 import { DataSource, DataSourceOptions } from 'typeorm';
 import * as path from 'path';
 import { loadCliEnv } from './load-cli-env';
+import { resolvePostgresConfig } from '../config/database-url';
 
 // Load env with the same precedence as the app (process.env > .env > data/.env.generated), so the
 // migration CLI targets the SAME database the dashboard configured — not the default SQLite DB.
@@ -48,27 +49,33 @@ const sqliteDataSourceOptions: DataSourceOptions = {
 //
 // Exported as a builder so the schema/search_path logic is unit-testable without mutating process.env
 // or reloading the module. The default `postgresDataSourceOptions` reads the loaded env at module eval.
+//
+// Supports multiple environment variable formats:
+// - DATABASE_HOST/PORT/NAME/USERNAME/PASSWORD (standard)
+// - DATABASE_URL (connection string)
+// - Railway references: pguser, pgpassword, pgdatabase, pg port, database url, etc.
 export function buildPostgresDataSourceOptions(env: NodeJS.ProcessEnv = process.env): DataSourceOptions {
   const schema = env.POSTGRES_SCHEMA || 'public';
   const useCustomSearchPath = schema !== 'public';
+  const pgConfig = resolvePostgresConfig(env);
+
   return {
     type: 'postgres',
     schema,
-    host: env.DATABASE_HOST || 'localhost',
-    port: parseInt(env.DATABASE_PORT || '5432', 10),
-    username: env.DATABASE_USERNAME,
-    password: env.DATABASE_PASSWORD,
-    database: env.DATABASE_NAME || 'openwa',
+    host: pgConfig.host,
+    port: pgConfig.port,
+    username: pgConfig.username,
+    password: pgConfig.password,
+    database: pgConfig.database,
     entities: dataEntities,
     migrations: dataMigrations,
     synchronize: false, // Never auto-sync in production
     logging: env.DATABASE_LOGGING === 'true',
-    ssl:
-      env.DATABASE_SSL === 'true'
-        ? {
-            rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
-          }
-        : false,
+    ssl: pgConfig.ssl
+      ? {
+          rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+        }
+      : false,
     extra: {
       max: parseInt(env.DATABASE_POOL_SIZE || '10', 10),
       // Pool resilience only. NO statement_timeout here: this connection runs migrations, and a

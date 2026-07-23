@@ -1,4 +1,5 @@
 import { computeFeatureFlags } from './feature-flags';
+import { resolvePostgresConfig } from './database-url';
 
 export default () => ({
   port: parseInt(process.env.PORT || '2785', 10),
@@ -63,6 +64,10 @@ export default () => ({
   },
 
   // Data Storage Database configuration (pluggable: SQLite, PostgreSQL, etc.)
+  // PostgreSQL connection parameters are resolved from multiple sources:
+  // 1. Explicit DATABASE_* variables (highest priority)
+  // 2. DATABASE_URL connection string
+  // 3. Railway PostgreSQL reference variables (pguser, pgpassword, pgdatabase, pg port, etc.)
   dataDatabase: {
     type: process.env.DATABASE_TYPE || 'sqlite',
     // SQLite path (used when type is sqlite)
@@ -77,11 +82,19 @@ export default () => ({
     // apps sharing the database). The schema must already exist — a missing one fails fast at
     // migration time rather than silently falling back to public. SQLite ignores this.
     schema: process.env.POSTGRES_SCHEMA || 'public',
-    // PostgreSQL/MySQL connection (used when type is postgres/mysql)
-    host: process.env.DATABASE_HOST || 'localhost',
-    port: parseInt(process.env.DATABASE_PORT || '5432', 10),
-    username: process.env.DATABASE_USERNAME,
-    password: process.env.DATABASE_PASSWORD,
+    // PostgreSQL connection (uses resolvePostgresConfig to support multiple env var formats)
+    // Supports: DATABASE_HOST/PORT/NAME/USERNAME/PASSWORD, DATABASE_URL, or Railway references
+    ...(() => {
+      const pgConfig = resolvePostgresConfig();
+      return {
+        host: pgConfig.host,
+        port: pgConfig.port,
+        username: pgConfig.username,
+        password: pgConfig.password,
+        database: pgConfig.database,
+        ssl: pgConfig.ssl,
+      };
+    })(),
     synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
     logging: process.env.DATABASE_LOGGING === 'true',
     // Connection pooling (PostgreSQL)
@@ -92,7 +105,6 @@ export default () => ({
     idleTimeoutMs: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
     connectionTimeoutMs: parseInt(process.env.DATABASE_CONNECTION_TIMEOUT_MS || '10000', 10),
     // SSL configuration
-    ssl: process.env.DATABASE_SSL === 'true',
     sslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
   },
 
