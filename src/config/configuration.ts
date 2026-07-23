@@ -68,45 +68,43 @@ export default () => ({
   // 1. Explicit DATABASE_* variables (highest priority)
   // 2. DATABASE_URL connection string
   // 3. Railway PostgreSQL reference variables (pguser, pgpassword, pgdatabase, pg port, etc.)
-  dataDatabase: {
-    type: process.env.DATABASE_TYPE || 'sqlite',
-    // SQLite path (used when type is sqlite)
-    database: process.env.DATABASE_NAME || './data/openwa.sqlite',
-    // Postgres database NAME (used when type is postgres). Resolved from the same
-    // DATABASE_NAME env as the migration CLI (data-source.ts) so the runtime factory and
-    // migrations never target different databases. Distinct sqlite-vs-pg defaults.
-    name: process.env.DATABASE_NAME || 'openwa',
-    // PostgreSQL schema (used when type is postgres). Default 'public' preserves the historical
-    // behavior; set POSTGRES_SCHEMA to place OpenWA's tables + the TypeORM migration ledger in a
-    // dedicated schema (e.g. a managed-Postgres project schema, or to isolate OpenWA from other
-    // apps sharing the database). The schema must already exist — a missing one fails fast at
-    // migration time rather than silently falling back to public. SQLite ignores this.
-    schema: process.env.POSTGRES_SCHEMA || 'public',
-    // PostgreSQL connection (uses resolvePostgresConfig to support multiple env var formats)
-    // Supports: DATABASE_HOST/PORT/NAME/USERNAME/PASSWORD, DATABASE_URL, or Railway references
-    ...(() => {
+  dataDatabase: (() => {
+    const dbType = process.env.DATABASE_TYPE || 'sqlite';
+
+    if (dbType === 'postgres') {
+      // PostgreSQL: use resolvePostgresConfig() as single source of truth
       const pgConfig = resolvePostgresConfig();
-      return {
+      const pgDatabase: Record<string, unknown> = {
+        type: 'postgres' as const,
+        name: pgConfig.database,
+        database: pgConfig.database,
+        schema: process.env.POSTGRES_SCHEMA || 'public',
         host: pgConfig.host,
         port: pgConfig.port,
         username: pgConfig.username,
         password: pgConfig.password,
-        database: pgConfig.database,
         ssl: pgConfig.ssl,
+        synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
+        logging: process.env.DATABASE_LOGGING === 'true',
+        poolSize: parseInt(process.env.DATABASE_POOL_SIZE || '10', 10),
+        statementTimeoutMs: parseInt(process.env.DATABASE_STATEMENT_TIMEOUT_MS || '30000', 10),
+        idleTimeoutMs: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
+        connectionTimeoutMs: parseInt(process.env.DATABASE_CONNECTION_TIMEOUT_MS || '10000', 10),
+        sslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
       };
-    })(),
-    synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
-    logging: process.env.DATABASE_LOGGING === 'true',
-    // Connection pooling (PostgreSQL)
-    poolSize: parseInt(process.env.DATABASE_POOL_SIZE || '10', 10),
-    // Pool/query timeouts (PostgreSQL). statement_timeout is server-side per query; idle/connection
-    // are pool-side. Set any to 0 to disable. Applied to the runtime connection only (see app.module).
-    statementTimeoutMs: parseInt(process.env.DATABASE_STATEMENT_TIMEOUT_MS || '30000', 10),
-    idleTimeoutMs: parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS || '30000', 10),
-    connectionTimeoutMs: parseInt(process.env.DATABASE_CONNECTION_TIMEOUT_MS || '10000', 10),
-    // SSL configuration
-    sslRejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
-  },
+      return pgDatabase;
+    }
+
+    // SQLite: use default values
+    const sqliteDatabase: Record<string, unknown> = {
+      type: 'sqlite' as const,
+      database: process.env.DATABASE_NAME || './data/openwa.sqlite',
+      name: 'sqlite',
+      synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
+      logging: process.env.DATABASE_LOGGING === 'true',
+    };
+    return sqliteDatabase;
+  })(),
 
   // WhatsApp engine configuration
   engine: {

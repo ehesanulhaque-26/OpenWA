@@ -34,7 +34,7 @@ export interface DatabaseConfig {
 /**
  * Parse a PostgreSQL connection URL into components.
  */
-export function parsePostgresUrl(url: string): {
+function parsePostgresUrl(url: string): {
   host: string;
   port: number;
   database: string;
