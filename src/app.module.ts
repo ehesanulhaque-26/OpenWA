@@ -133,13 +133,23 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
     }),
 
     // Data Storage Database (pluggable - user data)
-    TypeOrmModule.forRootAsync({
+          TypeOrmModule.forRootAsync({
       name: 'data',
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         const dbType = configService.get<'sqlite' | 'postgres'>('dataDatabase.type', 'sqlite');
-        const baseConfig = {
+        const isPostgres = dbType === 'postgres';
+        
+        // Enable SQL logging for diagnostics during startup
+        const enableSqlLogging = process.env.DATABASE_LOGGING === 'true' || 
+                                process.env.NODE_ENV !== 'production' ||
+                                isPostgres;
+        
+        console.log(`[TypeORM] Data connection: ${isPostgres ? 'PostgreSQL' : 'SQLite'}`);
+        console.log(`[TypeORM] SQL logging: ${enableSqlLogging ? 'enabled' : 'disabled'}`);
+        
+        const baseConfig: Record<string, unknown> = {
           entities: [
             __dirname + '/modules/session/**/*.entity{.ts,.js}',
             __dirname + '/modules/webhook/**/*.entity{.ts,.js}',
@@ -149,10 +159,12 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
             __dirname + '/modules/integration/**/*.entity{.ts,.js}',
           ],
           migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
-          logging: configService.get<boolean>('dataDatabase.logging', false),
+          logging: enableSqlLogging,
+          // Migration subscriber for logging
+          subscribers: [],
         };
 
-        if (dbType === 'postgres') {
+        if (isPostgres) {
           // Schema selection: 'public' (default) is a no-op vs the historical behavior. A non-public
           // schema additionally sets the session search_path via pg's startup `options` parameter so
           // the project's RAW, unqualified migration SQL (CREATE TABLE "x"..., ALTER TABLE "y"...)
@@ -161,6 +173,12 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
           // lands in the configured schema.
           const schema = configService.get<string>('dataDatabase.schema', 'public');
           const useCustomSearchPath = schema && schema !== 'public';
+          
+          console.log(`[TypeORM] PostgreSQL host: ${configService.get<string>('dataDatabase.host') || '(not set)'}`);
+          console.log(`[TypeORM] PostgreSQL port: ${configService.get<number>('dataDatabase.port') || 5432}`);
+          console.log(`[TypeORM] PostgreSQL database: ${configService.get<string>('dataDatabase.name') || 'openwa'}`);
+          console.log(`[TypeORM] PostgreSQL schema: ${schema}`);
+          
           return {
             ...baseConfig,
             name: 'data',

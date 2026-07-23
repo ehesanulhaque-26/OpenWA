@@ -31,8 +31,71 @@ import { Request, Response, NextFunction, json, urlencoded } from 'express';
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
 import { extname, join } from 'path';
+import { resolvePostgresConfig } from './config/database-url';
+
+// =============================================================================
+// DATABASE DIAGNOSTIC LOGGING
+// =============================================================================
+function logDatabaseConfig() {
+  const dbType = process.env.DATABASE_TYPE || 'sqlite';
+  
+  console.log('');
+  console.log('╔═══════════════════════════════════════════════════════════════════════╗');
+  console.log('║                     DATABASE CONFIGURATION                             ║');
+  console.log('╚═══════════════════════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log(`  DATABASE_TYPE: ${dbType}`);
+  
+  if (dbType === 'postgres') {
+    console.log('');
+    console.log('  *** USING POSTGRESQL ***');
+    console.log('');
+    
+    // Log what PostgreSQL config would be resolved
+    const pgConfig = resolvePostgresConfig();
+    
+    // Check what source was used
+    const hasExplicit = process.env.DATABASE_HOST && process.env.DATABASE_USERNAME && process.env.DATABASE_PASSWORD;
+    const hasUrl = !!process.env.DATABASE_URL;
+    const hasRailway = process.env.pguser || process.env.PGUSER;
+    const hasRailwayUrl = process.env['database public url'] || process.env['database url'];
+    
+    console.log('  PostgreSQL Connection Parameters:');
+    console.log(`    Host:     ${pgConfig.host || '(not set)'}`);
+    console.log(`    Port:     ${pgConfig.port || '(not set)'}`);
+    console.log(`    Database: ${pgConfig.database || '(not set)'}`);
+    console.log(`    Username: ${pgConfig.username || '(not set)'}`);
+    console.log(`    Password: ${pgConfig.password ? '*** (set)' : '(not set)'}`);
+    console.log(`    SSL:      ${pgConfig.ssl ? 'enabled' : 'disabled'}`);
+    console.log('');
+    console.log('  Configuration Source:');
+    console.log(`    DATABASE_* variables:  ${hasExplicit ? 'YES' : 'NO'}`);
+    console.log(`    DATABASE_URL:         ${hasUrl ? 'YES' : 'NO'}`);
+    console.log(`    Railway refs:         ${hasRailway ? 'YES' : 'NO'}`);
+    console.log(`    Railway URL ref:      ${hasRailwayUrl ? 'YES' : 'NO'}`);
+    
+    if (!hasExplicit && !hasUrl && !hasRailway && !hasRailwayUrl) {
+      console.log('');
+      console.log('  ⚠️  WARNING: No PostgreSQL configuration detected!');
+      console.log('     Expected: DATABASE_HOST, DATABASE_USERNAME, DATABASE_PASSWORD');
+      console.log('     Or: DATABASE_URL');
+      console.log('     Or: Railway reference variables (pguser, pgpassword, etc.)');
+    }
+  } else {
+    console.log('');
+    console.log('  *** USING SQLITE ***');
+    console.log(`    Database: ${process.env.DATABASE_NAME || './data/openwa.sqlite'}`);
+  }
+  
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════════════════════');
+  console.log('');
+}
 
 async function bootstrap() {
+  // Log database configuration at startup for diagnostics
+  logDatabaseConfig();
+  
   // Apply the operator-configured log verbosity (LOG_LEVEL) before anything logs. Unset/invalid → INFO.
   const requestedLevel = process.env.LOG_LEVEL?.trim().toLowerCase();
   if (requestedLevel && (Object.values(LogLevel) as string[]).includes(requestedLevel)) {
