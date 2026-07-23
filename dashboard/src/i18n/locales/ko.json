@@ -84,6 +84,7 @@
     "loadingChats": "채팅 불러오는 중...",
     "empty": "채팅 없음",
     "noMessageYet": "아직 메시지 없음",
+    "unreadBadge": "읽지 않은 메시지 {{count}}개",
     "loadingMessages": "메시지 불러오는 중...",
     "noMessagesInChat": "아직 메시지가 없습니다. 첫 메시지를 보내 대화를 시작하세요!",
     "downloadDocument": "문서 다운로드",
@@ -154,7 +155,8 @@
       "sessionId": "세션 ID",
       "phone": "전화번호",
       "status": "상태",
-      "lastActive": "마지막 활동"
+      "lastActive": "마지막 활동",
+      "actions": "작업"
     },
     "noSessions": "세션이 없습니다. 세션을 생성해 시작하세요.",
     "view": "보기",
@@ -764,7 +766,11 @@
       "installed": "플러그인이 설치되었습니다",
       "installFailed": "설치 실패",
       "uninstalled": "플러그인이 제거되었습니다",
-      "uninstallFailed": "제거 실패"
+      "uninstallFailed": "제거 실패",
+      "enableFailedTitle": "활성화 실패",
+      "disableFailedTitle": "비활성화 실패",
+      "configRequiredTitle": "설정 필요",
+      "configRequiredDesc": "활성화하기 전에 필수 항목을 입력하세요: {{fields}}"
     },
     "sessions": {
       "activationTitle": "실행 대상",

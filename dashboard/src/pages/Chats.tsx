@@ -953,7 +953,12 @@ export function Chats() {
                           <span className="chat-item-name" title={chat.name || chat.id}>
                             {chat.name || chat.id.split('@')[0]}
                           </span>
-                          {chat.timestamp && <span className="chat-item-time">{formatChatTime(chat.timestamp)}</span>}
+                          {/* Ternary, not `&&`: a chat with no messages carries timestamp 0, and React
+                              renders the number 0 as text — so `0 && <span/>` painted a literal "0"
+                              where the time belongs, on every such row. */}
+                          {chat.timestamp ? (
+                            <span className="chat-item-time">{formatChatTime(chat.timestamp)}</span>
+                          ) : null}
                         </div>
                         <div className="chat-item-bottom">
                           <span className="chat-item-snippet" title={formatLastMessageSnippet(chat)}>
@@ -961,7 +966,15 @@ export function Chats() {
                               <span className="no-message">{t('chats.noMessageYet')}</span>
                             )}
                           </span>
-                          {chat.unreadCount > 0 && <span className="chat-unread-badge">{chat.unreadCount}</span>}
+                          {chat.unreadCount > 0 && (
+                            <span
+                              className="chat-unread-badge"
+                              title={t('chats.unreadBadge', { count: chat.unreadCount })}
+                              aria-label={t('chats.unreadBadge', { count: chat.unreadCount })}
+                            >
+                              {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>

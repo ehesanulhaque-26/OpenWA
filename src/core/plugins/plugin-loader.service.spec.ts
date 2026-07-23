@@ -213,7 +213,7 @@ describe('PluginLoaderService — enable/config persistence', () => {
     expect(loader2.getPlugin('persist-test')?.config).toEqual({ execPath: '/new/chromium', headless: true });
   });
 
-  it('reports a re-registered plugin as installed after restart even if it was enabled (no boot auto-enable, no divergence)', () => {
+  it('reports a re-registered plugin as installed: registering never runs it, and the registry agrees', () => {
     loader.registerBuiltInPlugin(manifest, {}, {});
     storage.setPluginStatus('persist-test', PluginStatus.ENABLED); // operator enabled it
 
@@ -222,7 +222,9 @@ describe('PluginLoaderService — enable/config persistence', () => {
     const loader2 = new PluginLoaderService(config, new HookManager(), storage2, {} as unknown as ModuleRef);
     loader2.registerBuiltInPlugin(manifest, {}, {});
 
-    // Runtime is INSTALLED (not auto-enabled) AND the registry agrees (no enabled/installed divergence).
+    // Runtime is INSTALLED (registering does not run the lifecycle) AND the registry agrees, so there
+    // is no enabled/installed divergence. Restoring an operator-enabled plugin is a separate step that
+    // happens at bootstrap and skips built-ins — see plugin-restore-on-boot.spec.ts (#856).
     expect(loader2.getPlugin('persist-test')?.status).toBe(PluginStatus.INSTALLED);
     expect(storage2.getPluginStatus('persist-test')).toBe(PluginStatus.INSTALLED);
   });
@@ -788,6 +790,8 @@ describe('PluginLoaderService — search-provider enable-failure cleanup', () =>
     module: 'commonjs',
     moduleResolution: 'node',
     resolvePackageJsonExports: false,
+    // TypeScript 6 rejects the legacy resolution pair unless acknowledged. Revisit before TS 7.
+    ignoreDeprecations: '6.0',
   });
 
   // Runs the REAL worker (ts-node) instead of the compiled dist bootstrap, so enableSandboxed
@@ -863,6 +867,8 @@ describe('PluginLoaderService — search-provider worker-crash fallback', () => 
     module: 'commonjs',
     moduleResolution: 'node',
     resolvePackageJsonExports: false,
+    // TypeScript 6 rejects the legacy resolution pair unless acknowledged. Revisit before TS 7.
+    ignoreDeprecations: '6.0',
   });
 
   // Real ts-node worker (so enableSandboxed runs its true path) that captures the host so the test can

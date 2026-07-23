@@ -28,6 +28,7 @@ import {
 import { pluginsApi } from '../services/api';
 import type { Plugin, CatalogPlugin, PluginConfigField } from '../services/api';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useTheme } from '../hooks/useTheme';
 import { usePluginsQuery, useSessionsQuery, queryKeys } from '../hooks/queries';
 import { PageHeader } from '../components/PageHeader';
 import { useToast } from '../components/Toast';
@@ -248,15 +249,24 @@ function ConfigField({
  * Renders a plugin's sandboxed-iframe config editor. The entry HTML is fetched WITH the API key
  * (which never enters the iframe) and injected as `srcdoc` into a `sandbox="allow-scripts"` iframe
  * (opaque origin — no access to the parent). The editor talks to the host over a postMessage bridge:
- *   iframe → host  { type: 'config:get' }          → host → iframe { type: 'config:value', config, schema }
+ *   iframe → host  { type: 'config:get' }          → host → iframe { type: 'config:value', config, schema, theme }
  *   iframe → host  { type: 'config:save', config }  → host → iframe { type: 'config:saved' } | { type: 'config:error', message }
  * The host makes the authenticated PUT (secret redact/restore applies); the iframe only ever sees the
  * already-redacted config.
+ *
+ * `theme` is 'light' | 'dark', already resolved (so 'system' arrives as one of the two). The iframe has
+ * an opaque origin and cannot read the parent's theme itself, so without this an editor can only guess —
+ * which is how the Chat Flow editor ended up a glaring white panel inside a dark modal. Additive: an
+ * editor that ignores the field renders exactly as it did before.
+ *
+ * Sending it once, with the handshake, is sufficient: the theme control sits behind the modal overlay,
+ * so the theme cannot change while an editor is open, and reopening re-runs the handshake.
  */
 function PluginConfigUi({ plugin, sessionId }: { plugin: Plugin; sessionId?: string }) {
   const { t } = useTranslation();
   const toast = useToast();
   const queryClient = useQueryClient();
+  const { resolvedTheme } = useTheme();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -322,17 +332,21 @@ function PluginConfigUi({ plugin, sessionId }: { plugin: Plugin; sessionId?: str
               }),
             )
           : {};
-        post({ type: 'config:value', config: safeConfig, schema: plugin.configSchema });
+        post({ type: 'config:value', config: safeConfig, schema: plugin.configSchema, theme: resolvedTheme });
       } else if (msg?.type === 'config:save') {
         void (async () => {
           try {
-            if (sessionId)
-              await pluginsApi.updateSessionConfig(
-                plugin.id,
-                sessionId,
-                sparseSessionOverride(msg.config ?? {}, plugin),
-              );
-            else await pluginsApi.updateConfig(plugin.id, msg.config ?? {});
+            // These endpoints report a failure as 200 + {success:false}, so the result has to be read.
+            // Taking the absence of a throw as success told the operator "Saved!" — and told the editor
+            // its values were stored — for a save the server had rejected.
+            const res = sessionId
+              ? await pluginsApi.updateSessionConfig(
+                  plugin.id,
+                  sessionId,
+                  sparseSessionOverride(msg.config ?? {}, plugin),
+                )
+              : await pluginsApi.updateConfig(plugin.id, msg.config ?? {});
+            if (!res.success) throw new Error(res.message);
             void queryClient.invalidateQueries({ queryKey: queryKeys.plugins });
             post({ type: 'config:saved' });
             toast.success(t('plugins.toasts.savedTitle'), t('plugins.toasts.savedDesc'));
@@ -346,7 +360,7 @@ function PluginConfigUi({ plugin, sessionId }: { plugin: Plugin; sessionId?: str
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [plugin, sessionId, queryClient, t, toast]);
+  }, [plugin, sessionId, queryClient, t, toast, resolvedTheme]);
 
   if (error) return <div className="config-ui-status config-ui-error">{error}</div>;
   if (html === null)
@@ -595,12 +609,11 @@ export default function Plugins() {
     if (plugin.status !== 'enabled') {
       const missing = missingRequiredConfig(plugin);
       if (missing.length > 0) {
+        // Interpolation, not a template literal: with the field list baked into the default string the
+        // key could never be translated without silently dropping it.
         toast.warning(
-          t('plugins.toasts.configRequiredTitle', 'Configuration required'),
-          t(
-            'plugins.toasts.configRequiredDesc',
-            `Fill in the required field(s) before enabling: ${missing.join(', ')}`,
-          ),
+          t('plugins.toasts.configRequiredTitle'),
+          t('plugins.toasts.configRequiredDesc', { fields: missing.join(', ') }),
         );
         handleOpenConfig(plugin);
         return;
@@ -608,15 +621,18 @@ export default function Plugins() {
     }
     setActionLoading(plugin.id);
     try {
-      if (plugin.status === 'enabled') {
-        await pluginsApi.disable(plugin.id);
-      } else {
-        const res = await pluginsApi.enable(plugin.id);
-        // The endpoint reports lifecycle failures as 200 + {success:false} — surface them instead
-        // of silently refetching (the user would otherwise think the click did nothing).
-        if (!res.success) {
-          toast.warning(t('plugins.toasts.enableFailedTitle', 'Enable failed'), res.message);
-        }
+      // Both endpoints report lifecycle failures as 200 + {success:false} — surface them instead of
+      // silently refetching. The card flips to ERROR either way, but without the message the operator
+      // has to go to the logs to learn why.
+      const res =
+        plugin.status === 'enabled' ? await pluginsApi.disable(plugin.id) : await pluginsApi.enable(plugin.id);
+      if (!res.success) {
+        toast.warning(
+          plugin.status === 'enabled'
+            ? t('plugins.toasts.disableFailedTitle')
+            : t('plugins.toasts.enableFailedTitle'),
+          res.message,
+        );
       }
       refetchAll();
     } catch (err) {
@@ -665,7 +681,10 @@ export default function Plugins() {
     if (schemaFormRef.current && !schemaFormRef.current.reportValidity()) return;
     setSavingConfig(true);
     try {
-      await pluginsApi.updateConfig(configPlugin.id, schemaConfig);
+      // 200 + {success:false} is how a rejected save arrives; without this the modal closed on a
+      // "Saved!" toast and the operator's edit was silently gone on the next open.
+      const res = await pluginsApi.updateConfig(configPlugin.id, schemaConfig);
+      if (!res.success) throw new Error(res.message);
       void queryClient.invalidateQueries({ queryKey: queryKeys.plugins });
       toast.success(t('plugins.toasts.savedTitle'), t('plugins.toasts.savedDesc'));
       setShowConfigModal(false);
@@ -1203,24 +1222,23 @@ export default function Plugins() {
                     <PluginInstances pluginId={configPlugin.id} />
                   ) : showTabs && configTab === 'sessions' && configPlugin.sessionScoped !== false ? (
                     <SessionsTab plugin={configPlugin} />
-                  ) : configPlugin.configUi ||
-                    (lz.configSchema && Object.keys(lz.configSchema.properties).length > 0) ? (
-                    <>
-                      {configPlugin.configUi && <PluginConfigUi plugin={configPlugin} />}
-                      {lz.configSchema && Object.keys(lz.configSchema.properties).length > 0 && (
-                        <form ref={schemaFormRef} className="config-form" onSubmit={e => e.preventDefault()}>
-                          {Object.entries(lz.configSchema.properties).map(([key, field]) => (
-                            <ConfigField
-                              key={key}
-                              field={field}
-                              label={field.title || key}
-                              value={schemaConfig[key]}
-                              onChange={v => setSchemaConfig({ ...schemaConfig, [key]: v })}
-                            />
-                          ))}
-                        </form>
-                      )}
-                    </>
+                  ) : /* A plugin that ships its own editor owns the whole config: rendering the generic
+                         form underneath it too produced a second copy of every field and a second Save
+                         button with different semantics, which is what the Chat Flow modal looked like. */
+                  configPlugin.configUi ? (
+                    <PluginConfigUi plugin={configPlugin} />
+                  ) : lz.configSchema && Object.keys(lz.configSchema.properties).length > 0 ? (
+                    <form ref={schemaFormRef} className="config-form" onSubmit={e => e.preventDefault()}>
+                      {Object.entries(lz.configSchema.properties).map(([key, field]) => (
+                        <ConfigField
+                          key={key}
+                          field={field}
+                          label={field.title || key}
+                          value={schemaConfig[key]}
+                          onChange={v => setSchemaConfig({ ...schemaConfig, [key]: v })}
+                        />
+                      ))}
+                    </form>
                   ) : (
                     <div className="no-config">
                       <Settings size={48} style={{ opacity: 0.3 }} />
@@ -1233,8 +1251,11 @@ export default function Plugins() {
                   <button className="btn-secondary" onClick={() => setShowConfigModal(false)}>
                     {t('common.close')}
                   </button>
-                  {/* The Sessions and Instances tabs have their own actions; the footer Save is config-tab only. */}
-                  {showTabs && (configTab === 'sessions' || configTab === 'instances') ? null : lz.configSchema &&
+                  {/* The Sessions and Instances tabs have their own actions; the footer Save is config-tab
+                      only. A plugin with its own editor saves through that editor, so the footer Save is
+                      omitted rather than left to save a form the operator cannot see. */}
+                  {showTabs && (configTab === 'sessions' || configTab === 'instances') ||
+                  configPlugin.configUi ? null : lz.configSchema &&
                     Object.keys(lz.configSchema.properties).length > 0 ? (
                     <button className="btn-primary" onClick={handleSaveSchemaConfig} disabled={savingConfig}>
                       {savingConfig ? <Loader2 size={16} className="animate-spin" /> : t('plugins.config.save')}

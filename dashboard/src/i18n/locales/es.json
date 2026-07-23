@@ -84,6 +84,7 @@
     "loadingChats": "Cargando chats...",
     "empty": "Sin chats",
     "noMessageYet": "Aún sin mensajes",
+    "unreadBadge": "{{count}} mensajes sin leer",
     "loadingMessages": "Cargando mensajes...",
     "noMessagesInChat": "Aún no hay mensajes. ¡Envía el primero para empezar!",
     "downloadDocument": "Descargar documento",
@@ -154,7 +155,8 @@
       "sessionId": "ID de sesión",
       "phone": "Número de teléfono",
       "status": "Estado",
-      "lastActive": "Última actividad"
+      "lastActive": "Última actividad",
+      "actions": "Acciones"
     },
     "noSessions": "No se encontraron sesiones. Crea una para empezar.",
     "view": "Ver",
@@ -764,7 +766,11 @@
       "installed": "Plugin instalado",
       "installFailed": "Error en la instalación",
       "uninstalled": "Plugin desinstalado",
-      "uninstallFailed": "Error al desinstalar"
+      "uninstallFailed": "Error al desinstalar",
+      "enableFailedTitle": "Error al activar",
+      "disableFailedTitle": "Error al desactivar",
+      "configRequiredTitle": "Configuración requerida",
+      "configRequiredDesc": "Completa los campos obligatorios antes de activar: {{fields}}"
     },
     "sessions": {
       "activationTitle": "Ejecutar para",

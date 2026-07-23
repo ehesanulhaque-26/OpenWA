@@ -84,6 +84,7 @@
     "loadingChats": "正在加载聊天...",
     "empty": "没有聊天",
     "noMessageYet": "暂无消息",
+    "unreadBadge": "{{count}} 条未读消息",
     "loadingMessages": "正在加载消息...",
     "noMessagesInChat": "暂无消息。发送第一条消息即可开始！",
     "downloadDocument": "下载文档",
@@ -154,7 +155,8 @@
       "sessionId": "会话 ID",
       "phone": "电话号码",
       "status": "状态",
-      "lastActive": "上次活跃"
+      "lastActive": "上次活跃",
+      "actions": "操作"
     },
     "noSessions": "未找到会话。创建一个即可开始。",
     "view": "查看",
@@ -764,7 +766,11 @@
       "installed": "插件已安装",
       "installFailed": "安装失败",
       "uninstalled": "插件已卸载",
-      "uninstallFailed": "卸载失败"
+      "uninstallFailed": "卸载失败",
+      "enableFailedTitle": "启用失败",
+      "disableFailedTitle": "停用失败",
+      "configRequiredTitle": "需要配置",
+      "configRequiredDesc": "启用前请填写必填项：{{fields}}"
     },
     "sessions": {
       "activationTitle": "运行范围",

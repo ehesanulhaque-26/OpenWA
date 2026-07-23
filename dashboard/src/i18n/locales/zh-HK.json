@@ -84,6 +84,7 @@
     "loadingChats": "正在載入聊天...",
     "empty": "沒有聊天",
     "noMessageYet": "尚無訊息",
+    "unreadBadge": "{{count}} 條未讀訊息",
     "loadingMessages": "正在載入訊息...",
     "noMessagesInChat": "尚無訊息。傳送第一則訊息即可開始！",
     "downloadDocument": "下載文件",
@@ -154,7 +155,8 @@
       "sessionId": "工作階段 ID",
       "phone": "電話號碼",
       "status": "狀態",
-      "lastActive": "上次活躍"
+      "lastActive": "上次活躍",
+      "actions": "操作"
     },
     "noSessions": "找不到工作階段。建立一個即可開始。",
     "view": "查看",
@@ -764,7 +766,11 @@
       "installed": "外掛已安裝",
       "installFailed": "安裝失敗",
       "uninstalled": "外掛已解除安裝",
-      "uninstallFailed": "解除安裝失敗"
+      "uninstallFailed": "解除安裝失敗",
+      "enableFailedTitle": "啟用失敗",
+      "disableFailedTitle": "停用失敗",
+      "configRequiredTitle": "需要設定",
+      "configRequiredDesc": "啟用前請填寫必填項：{{fields}}"
     },
     "sessions": {
       "activationTitle": "執行對象",

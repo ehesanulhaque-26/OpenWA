@@ -84,6 +84,7 @@
     "loadingChats": "Loading chats...",
     "empty": "No chats",
     "noMessageYet": "No messages yet",
+    "unreadBadge": "{{count}} unread messages",
     "loadingMessages": "Loading messages...",
     "noMessagesInChat": "No messages yet. Send the first message to get started!",
     "downloadDocument": "Download document",
@@ -154,7 +155,8 @@
       "sessionId": "Session ID",
       "phone": "Phone Number",
       "status": "Status",
-      "lastActive": "Last Active"
+      "lastActive": "Last Active",
+      "actions": "Actions"
     },
     "noSessions": "No sessions found. Create one to get started.",
     "view": "View",
@@ -764,7 +766,11 @@
       "installed": "Plugin installed",
       "installFailed": "Install failed",
       "uninstalled": "Plugin uninstalled",
-      "uninstallFailed": "Uninstall failed"
+      "uninstallFailed": "Uninstall failed",
+      "enableFailedTitle": "Enable failed",
+      "disableFailedTitle": "Disable failed",
+      "configRequiredTitle": "Configuration required",
+      "configRequiredDesc": "Fill in the required field(s) before enabling: {{fields}}"
     },
     "sessions": {
       "activationTitle": "Run for",

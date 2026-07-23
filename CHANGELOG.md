@@ -9,11 +9,180 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **German (`de`) dashboard translation.** The dashboard now ships a full German locale and offers
+  "Deutsch" in the language switcher. All 689 translation keys are covered, so German users get a
+  fully localized UI instead of the English fallback. Thanks @rjsebening.
+
+- **Audit-log coverage for sensitive infrastructure operations.** The admin-only infrastructure
+  endpoints that save configuration, restart the server, and export/import the full database or
+  stored media now record an audit-log entry — attributing the operation to the calling API key and
+  client IP, with non-sensitive context only (section names, row counts; secret values are never
+  logged). Previously these operations, several of which expose or replace credential-bearing data,
+  left no audit trail. The audit-vocabulary coverage gate is extended to these actions, so a future
+  infrastructure operation cannot ship without one.
+
+### Fixed
+
+- **Session scoping on the audit-log and webhook delivery-failure list endpoints.** `GET /api/audit`
+  and `GET /api/webhooks/delivery-failures` now scope their results to the calling key's allowed
+  sessions, matching the rest of the API (`GET /webhooks`, `GET /search`). These two endpoints take
+  `sessionId` as a query parameter, which the API-key session fence — resolved only from route
+  params — did not cover, so a key restricted to a subset of sessions saw rows for every session
+  (and `GET /api/audit` with no `sessionId` returned every session's rows). A query `sessionId` may
+  now only narrow within the key's allowed sessions; unrestricted keys are unaffected. A structural
+  test now fails the build if any handler accepts a `sessionId` query param without scoping to the
+  calling key, so the gap cannot reappear.
+
+- **Chat list unread badge shape and overflow.** The unread-count badge in the chats sidebar rendered as an uneven oval and grew without bound as the count climbed. It now uses a fixed height with border-box sizing so a single digit is a true circle and larger counts form a rounded pill, and its label is capped at `99+`. The badge also exposes the exact unread count to assistive technology and as a hover tooltip.
+
+## [0.10.7] - 2026-07-23
+
+### Changed
+
+- **TypeORM upgraded from 0.3 to 1.1.** The ORM underneath every database operation moves off the
+  now-legacy 0.3 line onto the actively developed 1.x line. No schema change is involved: all existing
+  migrations apply unchanged, database files and PostgreSQL deployments are untouched, and the API
+  surface of the gateway is identical. One behavioral improvement ships with the upgrade: a database
+  lookup or write whose criteria would previously have been silently dropped (a bug class, not a
+  feature) now fails loudly instead of returning or modifying the wrong rows. Every such code path in
+  the gateway was audited as part of this upgrade. For self-hosters running from source, the minimum
+  Node.js version rises from 22.12 to **22.13** (the Docker image is unaffected — it already ships a
+  newer Node).
+
+## [0.10.6] - 2026-07-22
+
+### Changed
+
+- **The SQLite driver is now `better-sqlite3`.** The `sqlite3` package that previously drove both the
+  always-SQLite main database (auth and audit) and the default data database is unmaintained upstream —
+  its repository was archived in July 2026 — and its final release still bundles an outdated SQLite
+  library. The gateway now uses the actively maintained `better-sqlite3` driver, which carries a current
+  SQLite (3.53.x) including the recent FTS5 fixes the old line will never receive. Nothing changes in
+  how you configure or run OpenWA: `DATABASE_TYPE` keeps its `sqlite`/`postgres` values, existing
+  database files are opened as-is, and all migrations apply unchanged. PostgreSQL deployments are
+  affected only in the main (auth/audit) database, which has always been SQLite. Prebuilt binaries
+  cover the same platforms as before, including Alpine/musl and arm64
+  ([#848](https://github.com/rmyndharis/OpenWA/issues/848)).
+
+### Fixed
+
+- **The Sessions overview on the dashboard labels its last column correctly instead of printing `DASHBOARD.COLUMNS.ACTIONS`.** The header above the View and Disconnect buttons rendered the uppercased translation key verbatim, in every language, because the table referenced a `dashboard.columns.actions` key that no locale file defined. The missing key has been added to every supported locale, so the column now reads "Actions" (or its equivalent) as the other columns do.
+
+## [0.10.5] - 2026-07-22
+
+### Fixed
+
+- **Plugins you enabled stay enabled across a restart.** Every restart of the gateway — an upgrade, a
+  host reboot, a container restart policy — silently switched off every extension plugin, with nothing
+  written to the log and nothing shown in the dashboard. An integration such as the Chatwoot adapter
+  simply stopped relaying until someone noticed and turned it back on by hand. Your enable decision is
+  now remembered separately from whether the plugin happens to be running, and the plugins you had
+  enabled are started again once the gateway has finished coming up. A plugin that fails to start is
+  logged and left disabled rather than holding up the gateway. Enabling still runs the plugin's full
+  lifecycle, and a plugin you disabled stays disabled. Nothing to do on upgrade: a plugin that is
+  enabled when you upgrade is carried over automatically ([#856](https://github.com/rmyndharis/OpenWA/issues/856)).
+- **Messages handled by a plugin are no longer missing from your history.** When an auto-reply plugin
+  answered a message, it told the gateway to stop passing that message to the remaining plugins — and
+  the gateway took that as a cue to forget the message entirely. It was never saved, never sent to your
+  webhooks, and never appeared in the dashboard. A chat handled by a bot therefore read as a series of
+  replies answering nothing, and any integration downstream never learned the customer had written. The
+  same applied to outgoing messages. Stopping the plugin chain now does exactly that and nothing more:
+  the message is recorded and delivered to webhooks as usual. Plugin authors: this is a behaviour change
+  if you relied on it to hide messages — see [19 — Plugin Architecture](docs/19-plugin-architecture.md).
+- **A plugin configuration that fails to save no longer reports success.** The dashboard showed "Saved"
+  and closed the dialog even when the gateway had rejected the change, so the edit appeared to have been
+  applied and was silently gone the next time the dialog was opened. The failure and its reason are now
+  shown. The same fix applies to a plugin that fails to disable, which previously reported nothing at
+  all.
+- **A plugin that ships its own settings editor no longer shows two editors at once.** When a plugin
+  provided a custom editor, the dashboard rendered the generated form underneath it as well — so every
+  field appeared twice, followed by a second Save button that behaved differently from the editor's own.
+  The Chat Flow settings dialog was the visible case. A plugin's own editor now replaces the generated
+  form and owns saving; plugins without one are unchanged, form and Save button included.
+- **A plugin's own settings editor follows the dashboard theme.** The editor runs in a sandboxed frame
+  that cannot see the dashboard's theme, so it had no way to match it and stayed light — a bright panel
+  in the middle of a dark dialog. The dashboard now tells the editor which theme is in use. Plugin
+  authors: the theme arrives with the existing settings handshake and can be ignored safely; see
+  [19 — Plugin Architecture](docs/19-plugin-architecture.md) for the contract.
+- **The chat list no longer shows a stray `0` next to every conversation.** Each row in the Chats
+  sidebar rendered a literal `0` where the last message's time belongs, on every chat. A conversation
+  with no messages reports a timestamp of zero, and the check that was meant to hide the time in that
+  case ended up displaying the zero itself. The time is now simply omitted when there is no last
+  message, as intended. The unread-count badge was unaffected.
+- **The login screen shows the gateway's actual version again.** The dashboard resolved its version
+  from whichever `package.json` sat in the working directory the build ran from, which meant
+  `dashboard/package.json` — a file a release never touches — rather than the root `package.json` that
+  a release bumps. The two had drifted, so the login screen advertised an older version than the
+  gateway was running. Everywhere else in the dashboard hid this, because the sidebar replaces the
+  build-time value with the live version from the API once you are signed in; the login screen has no
+  session yet and shows the constant as-is. The version is now resolved relative to the build config
+  itself, so it no longer depends on where the build was started from.
+- **A message send that is retried after a recipient-address change is now recorded in the log.** When
+  whatsapp-web.js reports that a contact's cached address is stale, the gateway re-resolves the address
+  and sends again. That retry was silent, so in the case where the engine reports a failure for a
+  message it had in fact already delivered, the resulting second copy appeared nowhere in the logs and
+  could only be noticed on the recipient's phone. The retry now logs a warning naming the chat and both
+  addresses. Sending behaviour is unchanged.
+
+### Changed
+
+- **A release image is only tagged after it has been proven to start.** The release workflow
+  published `X.Y.Z`, `X.Y` and `latest` in the same step that built the image, and only then ran
+  the boot smoke test — so an image that could not start was already pullable by the time the
+  test that catches it failed, which is exactly what happened with `0.10.3`. The build now
+  publishes a throwaway `smoke-<run-id>` tag, the smoke test boots that on both architectures,
+  and a new promote step re-points the release tags at the identical manifest (no rebuild, so
+  provenance and SBOM attestations carry over) only once it passes. The GitHub Release depends
+  on the promote step, and the staging tag is cleaned up afterwards.
+- The smoke test no longer starts containers with `--rm`, so a container that exits on its own
+  survives long enough for `docker logs` to report why. The `0.10.3` failure reported
+  "No such container" instead of the actual error.
+
+## [0.10.4] - 2026-07-21
+
+> ⚠️ **Use this release, not `0.10.3`.** The `0.10.3` container image does not start: its
+> `sqlite3` native binary was built against glibc 2.38 while the runtime image (`node:22-slim`,
+> Debian bookworm) provides 2.36, so the driver failed to load and the app could not reach its
+> database. The release gate caught it on both architectures and the GitHub release was never
+> published, but the image had already been pushed. `0.10.4` contains the same features and
+> fixes as `0.10.3` plus the correction below.
+
+### Fixed
+
+- **The container image starts again.** `sqlite3` stays on the `5.x` line, whose prebuilt
+  binaries match the Debian bookworm runtime, instead of the `6.x` line whose prebuilds require
+  a newer glibc than the base image provides. The dependency advisories that motivated the
+  original bump are still resolved — `node-gyp` and `tar` are pinned forward through `overrides`
+  so the vulnerable `tar` never enters the tree, leaving `npm audit` clean without changing the
+  driver. Verified by building the production image and booting it, not only by the test suite.
+
+## [0.10.3] - 2026-07-21
+
+Patch release: new group, call, profile and message-edit capabilities, plus stricter reading
+of boolean and numeric request fields.
+
+> ⚠️ **Two behaviour changes on already-released surfaces.** Neither alters a response payload
+> or removes a field, but both can affect an existing deployment:
+>
+> 1. **Boolean and numeric request fields are read strictly.** A value the pipe previously
+>    guessed at — `1`, `0`, `yes`, `no` for a boolean, or a blank string for a number — now
+>    returns `400` instead of being silently coerced. Real JSON booleans and numbers, the exact
+>    strings `"true"`/`"false"`, and numeric strings such as `"5"` all continue to work, so JSON
+>    clients and all five SDKs are unaffected. **Migration:** if you post form-encoded bodies or
+>    stringly-typed JSON, send canonical values.
+> 2. **Status posts now pass the `message:sending` plugin gate.** A plugin that blocks broadly
+>    will now also block status posts, where it previously had no visibility into them, and the
+>    gate `input` for a status post carries no `chatId`. **Migration:** a handler that reads
+>    `input.chatId` unconditionally should branch on the `source` or `type` field first.
+
+### Added
 - **Outbound message edit.** `POST /api/sessions/:sessionId/messages/edit` edits the text of a
   message sent by the account, on both engines (whatsapp-web.js `Message.edit`, Baileys
   `sendMessage` with an `edit` key). Attempting to edit another sender's message fails with `403`,
   an unknown message/chat with `404`, and the stored record's body is updated through the same
   serialized mutation queue as inbound edit events. `message.edited` continues to cover inbound edits.
+  An edit passes the `message:sending` plugin gate like every other sender, so a plugin can rewrite
+  or block the replacement text.
 - **Live group events.** `group.join`, `group.leave`, and `group.update` are now actually
   dispatched — to webhooks (HMAC-signed, with stable idempotency keys) and to Socket.IO
   subscribers — on both engines. They were previously accepted in subscriptions but never emitted
@@ -29,12 +198,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`announce`, `locked`) and the disappearing-message timer (`ephemeralSeconds`, Baileys only — it
   returns a documented `501` on whatsapp-web.js, which has no such API). A settings patch applies
   the timer first, so a `501` can never silently follow an already-applied flag change, and
-  explicit `null` fields are rejected with `400`.
+  explicit `null` fields are rejected with `400`. `announce` and `locked` accept only a real boolean
+  or the exact strings `"true"`/`"false"`; any other spelling is rejected with `400` rather than
+  being interpreted, so a form-encoded `announce=false` can never restrict a group. `ephemeralSeconds`
+  is read the same way — a blank value is a `400`, not a silent `0` that would switch the
+  disappearing-message timer off.
 - **Own-profile management.** `PUT /api/sessions/:sessionId/profile/name`, `/status`, and
   `/picture` set the linked account's display name, about text, and profile picture on both engines.
 - **Incoming-call handling.** A new `call.received` webhook + Socket.IO event fires when an
   incoming call starts ringing (both engines; stale offers replayed from an offline window and the
-  account's own outgoing calls are not emitted). `POST /api/sessions/:sessionId/calls/:callId/reject`
+  account's own outgoing calls are not emitted). It fires once per call: both engines signal a
+  ringing call more than once (whatsapp-web.js on every write to its internal call map, Baileys via
+  the `offer` and `offer_notice` tags), and only the first is dispatched.
+  `POST /api/sessions/:sessionId/calls/:callId/reject`
   rejects a ringing call, and the per-session `config.autoRejectCalls: true` flag (settable at
   session creation) rejects every incoming call automatically — the event is still dispatched
   first. Unknown or expired call ids return `404`.
@@ -43,7 +219,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [OpenWA-plugins](https://github.com/rmyndharis/OpenWA-plugins) repo, and
   `docs/23-community-integrations.md` clarifies that it lists community projects only.
 
+### Changed
+- **The security audit runs as its own CI job.** `npm audit` reports against the advisory database
+  rather than against the diff, so a newly published advisory turns red on unrelated pull requests.
+  While it was the first step of the Lint job, that failure aborted the job before ESLint, the
+  type-check, the format check, the version-consistency check and the OpenAPI drift gate had run —
+  so an advisory silently switched off every code-quality gate at once. It is still blocking (the
+  build job depends on it) but can no longer mask an unrelated result.
+
+- **Status posts now pass the `message:sending` plugin gate.** `POST /api/sessions/:sessionId/status/{text,image,video}`
+  publish content from the linked account, but were the only content-bearing senders that did not
+  consult plugins first. They now run the same gate as chat sends, tagged `status-text`,
+  `status-image` and `status-video`, with the hook context `source` set to `StatusService` so a
+  plugin can distinguish a status post from a chat send. A blocked post returns `400`, now declared
+  on all three operations. A plugin may also rewrite the post; a rewritten media payload is
+  re-checked against the data-URI and `MEDIA_DOWNLOAD_MAX_BYTES` guards before it reaches the engine.
+  **Two notes for plugin authors:** a plugin that blocks broadly will now also block status posts,
+  where it previously had no visibility into them; and the gate `input` for a status post is **not**
+  a send DTO — it carries no `chatId`, but `{ text, options }` or `{ media: { mimetype, data }, options }`.
+  A handler that reads `input.chatId` unconditionally should branch on `source` or `type` first.
+
 ### Fixed
+- **`forEveryone: false` on message delete is honoured again.** `POST /api/sessions/:sessionId/messages/delete`
+  defaults `forEveryone` to `true`, so sending it at all means "delete only for me" — but a request
+  that carried the value as a string (any form-encoded body, since that parser produces only string
+  scalars) had it read as `true`, retracting the message from the recipient's device instead of
+  hiding it locally. That is not reversible, and the recipient sees a "message deleted" placeholder.
+  The field now accepts a real boolean or the exact strings `"true"`/`"false"`; **any other spelling
+  — `1`, `0`, `yes`, `no` — is now rejected with `400` instead of being read as `true`.** JSON
+  clients and all five SDKs send real booleans and are unaffected. `allowMultipleAnswers` on poll
+  send is read the same way, which is what its validation always claimed to do.
+
+- **Every boolean and numeric request field is now read strictly, and a test keeps it that way.**
+  The same coercion applied to every such field: a boolean took any non-empty string as `true`, and
+  a numeric field took a blank value as `0`. Fourteen more fields are covered — `active` and
+  `retryCount` on webhooks (a blank `retryCount` silently meant "no retries"), `enabled` on
+  integration instances, `ptt` on audio and bulk sends, `randomizeDelay` and `stopOnError` on bulk
+  batches, `latitude`/`longitude` on location sends (a blank pair became the valid coordinates
+  `0, 0`), `dateFrom`/`dateTo`/`offset` on search, and `font` on text status. Values that were
+  already correct still work — a numeric field still accepts `"5"`, and a boolean still accepts
+  `"true"`/`"false"` — so only input that was previously being guessed at is now refused with `400`.
+  A drift test walks class-validator's registry and fails the build if any boolean or numeric
+  request field, including one in a class that is never exported, accepts a value the pipe would
+  otherwise coerce. The published OpenAPI schema is unchanged.
 
 - Running more than one session no longer corrupts the Chromium launch flags of every
   session started after the first. The whatsapp-web.js adapter appended its per-session
@@ -70,6 +288,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the input lost focus. The `onClose` is now held in a ref and the open/close effect
   depends on `[open]` alone, so focus is applied once when the dialog opens and stays
   put across parent re-renders. Reported in #837, fixed in #838.
+
+### Security
+- **Resolved every known advisory in the dependency tree (17 → 0, including one critical).** The
+  critical one was a set of path-traversal and symlink issues in `node-tar`, reached only through
+  `sqlite3@5` → `node-gyp` → `tar`. `sqlite3` moves to `6.0.1`, which drops the `node-gyp`
+  dependency entirely in favour of `prebuild-install` and pulls a patched `tar@7`; `typeorm` moves
+  to `0.3.31`, the first release declaring `sqlite3@^6` as a supported peer. `shell-quote` (reached
+  through the `concurrently` dev dependency, and with no upstream fix available on any release
+  line) is pinned forward with an `overrides` entry.
+
+  The bundled SQLite build advances to 3.52.0. Migrations, the FTS5 full-text search tables, both
+  database connections and a full boot were verified against the new driver.
 
 ## [0.10.2] - 2026-07-20
 
